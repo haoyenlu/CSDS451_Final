@@ -1,6 +1,5 @@
 #include <vector>
 #include <iostream>
-#include "npy.hpp"
 #include <string>
 #include <fstream>
 
@@ -19,7 +18,7 @@ class ConvNet{
     public:
         ConvNet(){}
         ConvNet(unsigned input_channel, unsigned output_channel, unsigned kernel, unsigned padding, unsigned stride);
-        vector<vector<vector<float>>> forward(vector<vector<vector<float>>> input);
+        vector<vector<vector<vector<float>>>> forward(vector<vector<vector<vector<float>>>> input);
         void set_weights(vector<vector<float>> weights);
         vector<vector<vector<float>>> add_padding(vector<vector<vector<float>>> input);
 };
@@ -48,7 +47,7 @@ vector<vector<vector<float>>> ConvNet::add_padding(vector<vector<vector<float>>>
     size_t height = input[0].size(); // number of row
     size_t width = input[0][0].size(); // number of column
 
-    printf("Input Shape:(%zu,%zu,%zu)\n",input_channels,height,width);
+    // printf("Input Shape:(%zu,%zu,%zu)\n",input_channels,height,width);
 
     vector<vector<vector<float>>> input_with_padding(input_channels,vector<vector<float>> (height + this->padding * 2, vector<float> (width + this->padding * 2,0)));
 
@@ -60,32 +59,40 @@ vector<vector<vector<float>>> ConvNet::add_padding(vector<vector<vector<float>>>
         }
     }
 
+    // printf("Input with padding Shape:(%zu,%zu,%zu)\n",input_with_padding.size(),input_with_padding[0].size(),input_with_padding[0][0].size());
+
     return input_with_padding;
 
 }
 
-vector<vector<vector<float>>> ConvNet::forward(vector<vector<vector<float>>> input){
-    int input_channel = input.size();
-    int height = input[0].size();
-    int width = input[0][0].size();
+vector<vector<vector<vector<float>>>> ConvNet::forward(vector<vector<vector<vector<float>>>> input){
+    int batches = input.size();
+    int input_channel = input[0].size();
+    int height = input[0][0].size();
+    int width = input[0][0][0].size();
 
     int output_height = ((height - this->kernel + 2 * this->padding) / this->stride) + 1;
     int output_width = ((width - this->kernel + 2 * this->padding) / this->stride) + 1;
-    vector<vector<vector<float>>> output (this->output_channels, vector<vector<float>> (output_height, vector<float>(output_width,0)));
+    vector<vector<vector<vector<float>>>> output (batches, vector<vector<vector<float>>>(this->output_channels, vector<vector<float>> (output_height, vector<float>(output_width,0))));
 
     if (input_channel != this->input_channels){
         printf("Error: Input has %s channels, which is different than the required %s channels",input_channel,this->input_channels);
         return output;
     }
 
-    // naive
-    for (int i=0;i<input_channel;i++){
-        for (int j=0;j<this->output_channels;j++){
-            for (int k=0;k<output_height;k++){
-                for (int l=0;l<output_width;l++){
-                    for (int m=0;m<this->kernel && k * this->stride + m < output_width;m++){
-                        for(int n=0;n<this->kernel && l * this->stride + n < output_height;n++){
-                            output[j][k][l] += input[i][k*this->stride + m][l*this->stride + n] * this->weights[m][n];             
+    // naive 
+
+    for (int image = 0; image < batches; image ++){
+        vector<vector<vector<float>>> image_with_padding = this->add_padding(input[image]);
+
+        for (int i=0;i<input_channel;i++){
+            for (int j=0;j<this->output_channels;j++){
+                for (int k=0;k<output_height;k++){
+                    for (int l=0;l<output_width;l++){
+                        for (int m=0;m<this->kernel && k * this->stride + m < width;m++){
+                            for(int n=0;n<this->kernel && l * this->stride + n < height;n++){
+                                output[image][j][k][l] += image_with_padding[i][k*this->stride + m][l*this->stride + n] * this->weights[m][n];             
+                            }
                         }
                     }
                 }
@@ -94,24 +101,27 @@ vector<vector<vector<float>>> ConvNet::forward(vector<vector<vector<float>>> inp
     }
 
 
+
     return output;
 
 }
 
 
-vector<vector<float>> read_numpy_from_text(int rows, int cols, string filepath){
-    vector<vector<float>> data(rows,vector<float>(cols,0));
+vector<vector<vector<vector<float>>>> numpy_text_to_batch(int batch_size, int input_channels, int height, int width, string filepath){
+    vector<vector<vector<vector<float>>>> batch;
+
+    vector<vector<float>> data(batch_size * input_channels,vector<float>(height * width,0));
 
     ifstream file;
     file.open(filepath,ios::in);
 
     if (!file.is_open()){
         cout<< "Error: Cannot open file!" << endl;
-        return data;
+        return batch;
     }
     
-    for (int i=0;i<rows;i++){
-        for (int j=0;j<cols;j++){
+    for (int i=0;i<batch_size * input_channels;i++){
+        for (int j=0;j<height * width;j++){
             file >> data[i][j];
             if ( ! file ) {
                 cout << "Error reading file for element " << i << "," << j << endl; 
@@ -119,7 +129,21 @@ vector<vector<float>> read_numpy_from_text(int rows, int cols, string filepath){
         }
     }
 
-    return data;
+    // printf("Data Shape:(%d,%d)",data.size(),data[0].size());
+
+    batch = vector<vector<vector<vector<float>>>>(batch_size,vector<vector<vector<float>>>(input_channels,vector<vector<float>>(height,vector<float>(width,0))));
+    
+    for (int i=0;i<batch_size;i++){
+        for (int j=0;j<input_channels;j++){
+            for (int k=0;k<height;k++){
+                for (int l=0;l<width;l++){
+                    batch[i][j][k][l] = data[i * 3 + j][k*32 + l];
+                }
+            }
+        }
+    }
+
+    return batch;
 }
 
 
@@ -127,29 +151,19 @@ vector<vector<float>> read_numpy_from_text(int rows, int cols, string filepath){
 int main(){
     const string filepath = "image_0.txt";
 
-    vector<vector<float>> numpyArray = read_numpy_from_text(96,1024,filepath);
+    vector<vector<vector<vector<float>>>> images = numpy_text_to_batch(32,3,32,32,filepath);
 
-    cout << "Input Size:(" << numpyArray.size() << "," << numpyArray[0].size() << ")\n";
 
-    vector<vector<vector<float>>> image (3,vector<vector<float>>(32, vector<float>(32)));
+    ConvNet model(3,64,3,1,1);
 
-    for (int i=0;i<3;i++){
-        for (int j=0;j<32;j++){
-            for (int k=0;k<32;k++){
-                image[i][j][k] = numpyArray[i][j*32 + k];
-            }
-        }
-    }
 
-    ConvNet model(3,32,3,1,1);
+    cout << "Input shape:(" << images.size() << "," << images[0].size() << "," << images[0][0].size() << "," << images[0][0][0].size() <<   ")" << endl;
 
-    vector<vector<vector<float>>> image_with_padding = model.add_padding(image);
+    vector<vector<vector<vector<float>>>> output = model.forward(images);
 
-    cout << "Image with padding shape:(" << image_with_padding.size() << "," << image_with_padding[0].size() << "," << image_with_padding[0][0].size() << ")" << endl;
+    cout << "Output shape:(" << output.size() << "," << output[0].size() << "," << output[0][0].size() << "," << output[0][0][0].size() << ")\n";
 
-    vector<vector<vector<float>>> output = model.forward(image_with_padding);
 
-    cout << "Output shape:(" << output.size() << "," << output[0].size() << "," << output[0][0].size() << ")\n";
  
     return 0;
 }
