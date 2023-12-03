@@ -76,8 +76,20 @@ def train_model(train_loader,test_loader,num_epochs,num_classes,learning_rate):
         print("Save model to checkpoint")
 
 
+def write_image_to_txt(train_loader,num_of_images,image_file_name):
+
+    
+    for i, (images,labels) in enumerate(train_loader):
+        if i >= num_of_images: break
+
+        print(images)
+        
+
 if __name__ == "__main__":
     train_loader, test_loader = data_loader(data_dir="./data",batch_size=64,shuffle=True)
-    train_model(train_loader,test_loader,20,100,0.005)
+
+    write_image_to_txt(train_loader,1,"image")
+
+    #train_model(train_loader,test_loader,20,100,0.005)
 
 
