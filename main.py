@@ -12,17 +12,16 @@ print(f"Running on device: {device}")
 
 # Load CIFAR100 datasets
 def data_loader(data_dir,batch_size,shuffle=True):
-    mean = [0.5071, 0.4867, 0.4408]
-    std = [0.2675, 0.2565, 0.2761]
+    mean = [0.49139968, 0.48215827, 0.44653124]
+    std = [0.24703233, 0.24348505, 0.26158768]
 
     transform = transforms.Compose([
-        transforms.Resize((224,244)),
         transforms.ToTensor(),
         transforms.Normalize(mean=mean,std=std)
     ])
 
-    train_dataset = datasets.CIFAR100(root=data_dir,train=True,download=True,transform=transform)
-    test_dataset = datasets.CIFAR100(root=data_dir,train=False,download=True,transform=transform)
+    train_dataset = datasets.CIFAR10(root=data_dir,train=True,download=True,transform=transform)
+    test_dataset = datasets.CIFAR10(root=data_dir,train=False,download=True,transform=transform)
 
 
     train_loader = DataLoader(train_dataset,batch_size=batch_size,shuffle=shuffle)
@@ -75,6 +74,25 @@ def train_model(train_loader,test_loader,num_epochs,num_classes,learning_rate):
         },"./checkpoint/VGG16_model_checkpt.pt")
         print("Save model to checkpoint")
 
+def save_batch_image_to_text(train_loader,image_file_name,num_of_batches):
+    for i, (images,labels) in enumerate(train_loader):
+        if i >= num_of_batches: break
+        array = images.numpy()
+        print(array.shape)
+        batch_size = array.shape[0]
+        channels = array.shape[1]
+        rows = array.shape[2]
+        cols = array.shape[3]
+
+        array = np.reshape(array,(batch_size * channels, rows * cols))
+
+        for k in range(10):
+            print(f"({array[k][0]} , {images[k//3][k%3][0][0]}) ")
+
+        np.savetxt(f'{image_file_name}_{i}.txt',array,delimiter=" ")
+
+    
+
 
 def write_image_to_txt(train_loader,num_of_images,image_file_name):
 
@@ -86,10 +104,15 @@ def write_image_to_txt(train_loader,num_of_images,image_file_name):
         
 
 if __name__ == "__main__":
+
     train_loader, test_loader = data_loader(data_dir="./data",batch_size=64,shuffle=True)
 
     write_image_to_txt(train_loader,1,"image")
 
     #train_model(train_loader,test_loader,20,100,0.005)
+
+    train_loader, test_loader = data_loader(data_dir="./data",batch_size=32,shuffle=True)
+    save_batch_image_to_text(train_loader,"batches/batch",2)
+    #train_model(train_loader,test_loader,20,100,0.005))
 
 
