@@ -187,7 +187,7 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
     sycl::queue q(sycl::default_selector_v);
     cout << "Device: " << q.get_device().get_info<sycl::info::device::name>() << "\n";
     
-    float **output_host  = new float*[this->output_channels];
+    float **output_host = new float*[this->output_channels];
     for (int i=0;i<this->output_channels;i++){
         output_host[i] = new float[output_height * output_width];
         for (int j=0;j<output_height;j++){
@@ -207,10 +207,10 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
         }
     }
 
-    float **weight_host= new float * [this->output_channels * this->input_channels];
+    float **weight_host = new float*[this->input_channels * this->output_channels];
     for (int i=0;i<this->output_channels;i++){
-        for (int j=0;j<this->input_channels;j++){
-            weight_host[i*this->input_channels + j] = new float[this->kernel * this->kernel];     
+        for (int j=0;j<this->input_channels;j++){   
+            weight_host[i*this->input_channels + j] = new float[this->kernel*this->kernel];
             for (int k=0;k<this->kernel;k++){
                 for (int q=0;q<this->kernel;q++){
                     weight_host[i*this->input_channels + j][k * this->kernel + q] = this->weights[i][j][k][q];
@@ -236,7 +236,7 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
     sycl::buffer<float,1> bias_buf(bias_host,bias_range);
     
 
-    q.submit([&](sycl::handler &h){
+    this->Q.submit([&](sycl::handler &h){
         sycl::accessor output(output_buf,h);
         sycl::accessor input(input_buf,h);
         sycl::accessor weights(weight_buf,h);
@@ -291,11 +291,11 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
                 }
             }
         });
-    q.wait();
+    this->Q.wait();
     });
 
     cout << "--End Parallel\n";
-    sycl::host_accessor<float,2> output_result(output_buf);
+    sycl::host_accessor<float,2> output_result(output_buf,output_range);
 
     vector<vector<vector<float>>> output (this->output_channels, vector<vector<float>> (output_height, vector<float>(output_width,0)));
     for (int i=0;i<this->output_channels;i++){
@@ -306,10 +306,10 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
         }
     }
 
-    delete [] output_host;
-    delete [] input_host;
-    delete [] weight_host;
-    delete [] bias_host;
+    delete[] output_host;
+    delete[] input_host;
+    delete[] weight_host;
+    delete[] bias_host;
     return output;
 }
 
@@ -401,6 +401,9 @@ int main(){
     vector<vector<vector<vector<float>>>> images = numpy_text_to_batch(32,3,32,32,filepath);
 
     ConvNet model(3,64,3,1,1);
+
+    sycl::queue q(sycl::gpu_selector_v);
+    model.device(q);
 
     cout << "Input shape:(" << images.size() << "," << images[0].size() << "," << images[0][0].size() << "," << images[0][0][0].size() <<   ")" << endl;
 
