@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sycl/sycl.hpp>
 
+#include "dpc_common.hpp"
 
 #define COMP(a,b) (abs(a-b) < 0.001)
 
@@ -21,8 +22,13 @@ class ConvNet{
         unsigned padding;
 
         sycl::queue Q;
+
+        float****weights_usm;
+        float*biases_usm;
+
     public:
-        ConvNet(){}
+        ConvNet(){};
+        ~ConvNet();
         ConvNet(unsigned input_channel, unsigned output_channel, unsigned kernel, unsigned padding, unsigned stride);
         vector<vector<vector<vector<float>>>> forward(vector<vector<vector<vector<float>>>> input);
 
@@ -38,8 +44,9 @@ class ConvNet{
         vector<vector<vector<float>>> reorder(vector<vector<vector<float>>> image,int input_height,int input_width,int output_height, int output_width);
         vector<vector<vector<float>>> naive(vector<vector<vector<float>>> image,int input_height,int input_width,int output_height,int output_width);
         vector<vector<vector<float>>> direct(vector<vector<vector<float>>> image, int input_height,int input_width, int output_height, int output_width);
+        vector<vector<vector<float>>> direct_without_parallel(vector<vector<vector<float>>> image, int input_height,int input_width, int output_height, int output_width);
 
-        void device(sycl::queue &Q);
+        void device(sycl::queue Q);
 };
 
 
@@ -51,7 +58,12 @@ ConvNet::ConvNet(unsigned input_channel, unsigned output_channel, unsigned kerne
     this->padding = padding;
 
     this->weights = vector<vector<vector<vector<float>>>>(output_channel,vector<vector<vector<float>>>(input_channel, vector<vector<float>>(kernel,vector<float> (kernel,0.5))));
-    this->biases = vector<float>(output_channel,0);
+    this->biases = vector<float>(output_channel,0.5);
+}
+
+ConvNet::~ConvNet(){
+    free(this->weights_usm,this->Q);
+    free(this->biases_usm,this->Q);
 }
 
 void ConvNet::set_weights(vector<vector<vector<vector<float>>>> weights){
@@ -112,6 +124,9 @@ vector<vector<vector<vector<float>>>> ConvNet::forward(vector<vector<vector<vect
         return output_batch;
     }
 
+    height = height + 2 * this->padding;
+    width = width + 2 * this->padding;
+
     for (int image = 0; image < batches; image ++){
         // add padding 
         vector<vector<vector<float>>> image_with_padding = this->add_padding(input[image]);
@@ -133,6 +148,8 @@ vector<vector<vector<vector<float>>>> ConvNet::forward(vector<vector<vector<vect
 // naive convolution algorithm
 vector<vector<vector<float>>> ConvNet::naive(vector<vector<vector<float>>> image,int input_height,int input_width,int output_height,int output_width){
     vector<vector<vector<float>>> output (this->output_channels,vector<vector<float>> (output_height, vector<float> (output_width,0)));
+    
+    dpc_common::TimeInterval time; // Timing the Convolution Algorithm
 
     for (int i=0;i<this->input_channels;i++){
         for (int j=0;j<this->output_channels;j++){
@@ -142,15 +159,20 @@ vector<vector<vector<float>>> ConvNet::naive(vector<vector<vector<float>>> image
                         for(int n=0;n<this->kernel;n++){
                             int input_row = l * this->stride + n;
                             int input_col = k * this->stride + m;
-                            if (input_row >= input_height || input_col >= input_width) continue;
-                            else output[j][l][k] += image[i][input_row][input_col] * this->weights[j][i][n][m];             
+                            if (input_row >= input_height || input_col >= input_width) break;
+                            output[j][l][k] += image[i][input_row][input_col] * this->weights[j][i][n][m];         
+                            output[j][l][k] += this->biases[j];    
                         }
                     }
-                    output[j][l][k] += this->biases[j];
                 }
             }
         }
     }
+
+    
+    double time_elapsed = time.Elapsed();
+    cout << "Naive Convolution Time: " << time_elapsed << endl;
+
     return output;
 }
 
@@ -158,6 +180,8 @@ vector<vector<vector<float>>> ConvNet::naive(vector<vector<vector<float>>> image
 // reorder the loop of naive convolution algorithm
 vector<vector<vector<float>>> ConvNet::reorder(vector<vector<vector<float>>> image, int input_height, int input_width, int output_height, int output_width){
     vector<vector<vector<float>>> output (this->output_channels,vector<vector<float>> (output_height, vector<float> (output_width,0)));
+    
+    dpc_common::TimeInterval time; // Timing the Convolution Algorithm
 
     for (int l=0;l<output_height;l++){ // H_o ( output height )
         for (int n=0;n<this->kernel;n++){ // H_f ( kernel height )
@@ -178,85 +202,61 @@ vector<vector<vector<float>>> ConvNet::reorder(vector<vector<vector<float>>> ima
             }
         }
     }
+    
+    double time_elapsed = time.Elapsed();
+    cout << "Reorder Convolution Time: " << time_elapsed << endl;
+
     return output;
 }
 
 
 vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> input, int input_height,int input_width, int output_height,int output_width){
     cout << "-----------------------"<< "Run direct algorithm" << "-----------------------------------" <<"\n";
-    sycl::queue q(sycl::default_selector_v);
-    cout << "Device: " << q.get_device().get_info<sycl::info::device::name>() << "\n";
-    
-    float **output_host = new float*[this->output_channels];
+
+    //sycl::queue q(sycl::gpu_selector_v);
+    //std::cout << "Device: " << q.get_device().get_info<sycl::info::device::name>() << std::endl;
+
+    float ***output_share = sycl::malloc_shared<float**>(this->output_channels,this->Q);
     for (int i=0;i<this->output_channels;i++){
-        output_host[i] = new float[output_height * output_width];
+        output_share[i] = sycl::malloc_shared<float*>(output_height, this->Q);
         for (int j=0;j<output_height;j++){
+            output_share[i][j] = sycl::malloc_shared<float>(output_width,this->Q);
             for (int k=0;k<output_width;k++){
-                output_host[i][j*output_width + k] = 0;
+                output_share[i][j][k] = 0;
             }
         }
     }
-
-    float **input_host = new float*[this->input_channels];
+    float ***image_share = sycl::malloc_shared<float**>(this->input_channels,this->Q);
     for (int i=0;i<this->input_channels;i++){
-        input_host[i] = new float[input_height * input_width];
+        image_share[i] = sycl::malloc_shared<float*>(input_height,this->Q);
         for (int h=0;h<input_height;h++){
+            image_share[i][h] = sycl::malloc_shared<float>(input_width,this->Q);
             for (int w=0;w<input_width;w++){
-                input_host[i][h*input_width + w] = input[i][h][w];
+                image_share[i][h][w] = input[i][h][w];
             }
         }
     }
-
-    float **weight_host = new float*[this->input_channels * this->output_channels];
-    for (int i=0;i<this->output_channels;i++){
-        for (int j=0;j<this->input_channels;j++){   
-            weight_host[i*this->input_channels + j] = new float[this->kernel*this->kernel];
-            for (int k=0;k<this->kernel;k++){
-                for (int q=0;q<this->kernel;q++){
-                    weight_host[i*this->input_channels + j][k * this->kernel + q] = this->weights[i][j][k][q];
-                }
-            }
-        }
-    }
-
-
-    float *bias_host = new float[this->output_channels];
-    for (int i=0;i<this->output_channels;i++){
-        bias_host[i] = this->biases[i];
-    }
-
-    sycl::range<2> output_range{static_cast<size_t>(this->output_channels),static_cast<size_t>(output_height * output_width)};
-    sycl::range<2> input_range{static_cast<size_t>(this->input_channels),static_cast<size_t>(input_height * input_width)};
-    sycl::range<2> weight_range{static_cast<size_t>(this->output_channels * this->input_channels), static_cast<size_t>(this->kernel * this->kernel)};
-    sycl::range<1> bias_range{static_cast<size_t>(this->output_channels)};
-
-    sycl::buffer<float,2> output_buf(*output_host,output_range);
-    sycl::buffer<float,2> input_buf(*input_host,input_range);
-    sycl::buffer<float,2> weight_buf(*weight_host,weight_range);
-    sycl::buffer<float,1> bias_buf(bias_host,bias_range);
     
+    float ****weights_share = this->weights_usm;
+    float *biases_share = this->biases_usm;
+
+    dpc_common::TimeInterval time; // Timing the Convolution Algorithm
 
     this->Q.submit([&](sycl::handler &h){
-        sycl::accessor output(output_buf,h);
-        sycl::accessor input(input_buf,h);
-        sycl::accessor weights(weight_buf,h);
-        sycl::accessor biases(bias_buf,h);
-
         int output_channels = this->output_channels;
         int input_channels = this->input_channels;
         int stride = this->stride;
         int kernel = this->kernel;
 
-        int output_chn_block_size = 16;
+        int output_chn_block_size = 1;
         int input_chn_block_size = 1;
-        int output_width_block_size = 8;
+        int output_width_block_size = 16;
 
         int output_chn_block_cnt = static_cast<int>(output_channels / output_chn_block_size );
         int input_chn_block_cnt = static_cast<int>(input_channels / input_chn_block_size);
         int output_width_block_cnt = static_cast<int>(output_width / output_width_block_size);
 
-
-        h.parallel_for(output_chn_block_cnt,[=](auto j){
+        h.parallel_for(sycl::range<1>(output_chn_block_cnt),[=](sycl::id<1> j){
             for (int i=0;i< input_chn_block_cnt;i++){
                 for (int l=0;l<output_height;l++){
                     for (int k=0;k<output_width_block_cnt;k++){
@@ -272,16 +272,16 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
 
                                     for (int kk=0;kk<output_width_block_size;kk++){
                                         int block_output_width = k * output_width_block_size  + kk;
-                                        int block_input_width = stride * k * output_width_block_size + kk + m;
+                                        int block_input_width = stride * block_output_width  + m;
                                         if (block_output_width >= output_width || block_input_width >= input_width) break;
 
                                         for (int jj=0;jj<output_chn_block_size;jj++){
                                             int block_output_chn = j * output_chn_block_size  + jj; 
                                             if (block_output_chn >= output_channels) break;
-                                            float ans = input[block_input_chn][block_input_height * input_width + block_input_width] * weights[block_output_chn * input_channels + block_input_chn][n* kernel + m];
+                                            float ans = image_share[block_input_chn][block_input_height][block_input_width] * weights_share[block_output_chn][block_input_chn][n][m];
 
-                                            output[block_output_chn][l * output_width + block_output_width] += ans;
-                                            output[block_output_chn][l * output_width + block_output_width] += biases[block_output_chn];
+                                            output_share[block_output_chn][l][block_output_width] += ans;
+                                            output_share[block_output_chn][l][block_output_width] += biases_share[block_output_chn];
                                         }       
                                     }
                                 }
@@ -291,25 +291,73 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
                 }
             }
         });
-    this->Q.wait();
     });
+    this->Q.wait();
 
-    cout << "--End Parallel\n";
-    sycl::host_accessor<float,2> output_result(output_buf,output_range);
+    double time_elapsed = time.Elapsed();
+    cout << "Direct Convolution Time: " << time_elapsed << endl;
 
-    vector<vector<vector<float>>> output (this->output_channels, vector<vector<float>> (output_height, vector<float>(output_width,0)));
+    vector<vector<vector<float>>> output_result (this->output_channels, vector<vector<float>> (output_height, vector<float>(output_width,0)));
     for (int i=0;i<this->output_channels;i++){
         for(int j=0;j<output_height;j++){
             for (int k=0;k<output_width;k++){
-                output[i][j][k] = output_result[i][j*output_width + k];
+                output_result[i][j][k] = output_share[i][j][k];
             }
         }
     }
 
-    delete[] output_host;
-    delete[] input_host;
-    delete[] weight_host;
-    delete[] bias_host;
+    free(output_share,this->Q);
+    free(image_share,this->Q);
+
+    return output_result;
+}
+
+vector<vector<vector<float>>> ConvNet::direct_without_parallel(vector<vector<vector<float>>> input, int input_height,int input_width, int output_height,int output_width){
+    vector<vector<vector<float>>> output (this->output_channels,vector<vector<float>> (output_height, vector<float> (output_width,0)));
+
+    int output_chn_block_size = 16;
+    int input_chn_block_size = 1;
+    int output_width_block_size = 8;
+
+    int output_chn_block_cnt = static_cast<int>(this->output_channels / output_chn_block_size );
+    int input_chn_block_cnt = static_cast<int>(this->input_channels / input_chn_block_size);
+    int output_width_block_cnt = static_cast<int>(output_width / output_width_block_size);
+
+    for (int j=0;j<output_chn_block_cnt;j++){
+        for (int i=0;i< input_chn_block_cnt;i++){
+            for (int l=0;l<output_height;l++){
+                for (int k=0;k<output_width_block_cnt;k++){
+                    for (int n=0;n<this->kernel;n++){
+                        int block_input_height = l * stride + n;
+                        if (block_input_height >= input_height) break;
+
+                
+                        for (int m=0;m<this->kernel;m++){
+                            for (int ii=0;ii<input_chn_block_size;ii++){
+                                int block_input_chn = i * input_chn_block_size + ii;
+                                if (block_input_chn >= input_channels) break;
+
+                                for (int kk=0;kk<output_width_block_size;kk++){
+                                    int block_output_width = k * output_width_block_size  + kk;
+                                    int block_input_width = stride * block_output_width + m;
+                                    if (block_output_width >= output_width || block_input_width >= input_width) break;
+
+                                    for (int jj=0;jj<output_chn_block_size;jj++){
+                                        int block_output_chn = j * output_chn_block_size  + jj; 
+                                        if (block_output_chn >= output_channels) break;
+                                        float ans = input[block_input_chn][block_input_height][block_input_width] * this->weights[block_output_chn][block_input_chn][n][m];
+
+                                        output[block_output_chn][l][block_output_width] += ans;
+                                        output[block_output_chn][l][block_output_width] += biases[block_output_chn];
+                                    }       
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     return output;
 }
 
@@ -326,9 +374,6 @@ bool ConvNet::cmp_mat(vector<vector<vector<float>>> o1, vector<vector<vector<flo
         printf("Error: Two matrix has different size. matrix_1 size: (%d,%d,%d), matrix_2 size:(%d,%d,%d)\n", o1_c,o1_h,o1_w,o2_c,o2_h,o2_w);
         return false;
     }
-    else{
-        printf("Matrix Size: (%d,%d,%d)\n",o1_c,o1_h,o1_w);
-    }
 
     // compare value
     bool same = true;
@@ -337,7 +382,7 @@ bool ConvNet::cmp_mat(vector<vector<vector<float>>> o1, vector<vector<vector<flo
         for (int h=0;h<o1_h;h++){
             for (int w=0;w<o1_w;w++){
                 if (!COMP(o1[c][h][w],o2[c][h][w])){
-                    //printf("Two matrix has different value at (%d,%d,%d). matrix_1 value: %f, matrix_2 value: %f\n",c,h,w,o1[c][h][w], o2[c][h][w]);
+                    if (same) printf("Two matrix has different value at (%d,%d,%d). matrix_1 value: %f, matrix_2 value: %f\n",c,h,w,o1[c][h][w], o2[c][h][w]);
                     number_of_difference += 1;
                     same = false;
                 }
@@ -348,9 +393,28 @@ bool ConvNet::cmp_mat(vector<vector<vector<float>>> o1, vector<vector<vector<flo
     return same;
 }
 
-void ConvNet::device(sycl::queue &Q){
+void ConvNet::device(sycl::queue Q){
     this->Q = Q;
     cout << "Device: " << this->Q.get_device().get_info<sycl::info::device::name>() << "\n";
+
+    this->weights_usm = sycl::malloc_shared<float***>(this->output_channels,this->Q);
+    for (int i=0;i<this->output_channels;i++){
+        weights_usm[i] = sycl::malloc_shared<float**>(this->input_channels,this->Q);
+        for (int j=0;j<this->input_channels;j++){
+            weights_usm[i][j] = sycl::malloc_shared<float*>(this->kernel,this->Q);
+            for (int k=0;k<this->kernel;k++){
+                weights_usm[i][j][k] = sycl::malloc_shared<float>(this->kernel,this->Q);
+                for (int q=0;q<this->kernel;q++){
+                    weights_usm[i][j][k][q] = this->weights[i][j][k][q];
+                }
+            }
+        }
+    }
+
+    this->biases_usm = sycl::malloc_shared<float>(this->output_channels,this->Q);
+    for (int i=0;i<this->output_channels;i++){
+        biases_usm[i] = this->biases[i];
+    }
 }
 
 
@@ -396,11 +460,17 @@ vector<vector<vector<vector<float>>>> numpy_text_to_batch(int batch_size, int in
 
 
 int main(){
-    const string filepath = "image_0.txt";
+    const string filepath = "layer2_batch_32x64x16x16.txt";
 
-    vector<vector<vector<vector<float>>>> images = numpy_text_to_batch(32,3,32,32,filepath);
+    int batch_size = 32;
+    int input_channels = 64;
+    int output_channels = 128;
+    int input_height = 16;
+    int input_width = 16;
 
-    ConvNet model(3,64,3,1,1);
+    vector<vector<vector<vector<float>>>> images = numpy_text_to_batch(batch_size,input_channels,input_height,input_width,filepath);
+
+    ConvNet model(input_channels,output_channels,3,1,1);
 
     sycl::queue q(sycl::gpu_selector_v);
     model.device(q);

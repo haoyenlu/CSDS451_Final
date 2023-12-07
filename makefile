@@ -1,5 +1,5 @@
 CXX = icpx
-CXXFLAGS = -fsycl -g 
+CXXFLAGS = -fsycl
 EXE = conv
 
 all:

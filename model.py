@@ -3,6 +3,7 @@ import torch.nn as nn
 class VGG16(nn.Module):
     def __init__(self, num_classes=100):
         super(VGG16, self).__init__()
+        self.output = {}
         self.layer1 = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64),
@@ -62,7 +63,7 @@ class VGG16(nn.Module):
             nn.MaxPool2d(kernel_size = 2, stride = 2))
         self.fc = nn.Sequential(
             nn.Dropout(0.5),
-            nn.Linear(7*7*512, 4096),
+            nn.Linear(512, 4096),
             nn.ReLU())
         self.fc1 = nn.Sequential(
             nn.Dropout(0.5),
@@ -73,10 +74,15 @@ class VGG16(nn.Module):
 
     def forward(self, x):
         out = self.layer1(x)
+        self.output['layer1'] = out.detach()
         out = self.layer2(out)
+        self.output['layer2'] = out.detach()
         out = self.layer3(out)
+        self.output['layer3'] = out.detach()
         out = self.layer4(out)
+        self.output['layer4'] = out.detach()
         out = self.layer5(out)
+        self.output['layer5'] = out.detach()
         out = self.layer6(out)
         out = self.layer7(out)
         out = self.layer8(out)

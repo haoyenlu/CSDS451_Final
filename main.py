@@ -16,6 +16,7 @@ def data_loader(data_dir,batch_size,shuffle=True):
     std = [0.24703233, 0.24348505, 0.26158768]
 
     transform = transforms.Compose([
+        transforms.Resize((32,32)),
         transforms.ToTensor(),
         transforms.Normalize(mean=mean,std=std)
     ])
@@ -74,45 +75,47 @@ def train_model(train_loader,test_loader,num_epochs,num_classes,learning_rate):
         },"./checkpoint/VGG16_model_checkpt.pt")
         print("Save model to checkpoint")
 
-def save_batch_image_to_text(train_loader,image_file_name,num_of_batches):
-    for i, (images,labels) in enumerate(train_loader):
-        if i >= num_of_batches: break
-        array = images.numpy()
-        print(array.shape)
-        batch_size = array.shape[0]
-        channels = array.shape[1]
-        rows = array.shape[2]
-        cols = array.shape[3]
+def save_torch_to_text(torch_array,file_name):
+    array = torch_array.numpy()
+    print(array.shape)
+    batch_size = array.shape[0]
+    channels = array.shape[1]
+    rows = array.shape[2]
+    cols = array.shape[3]
 
-        array = np.reshape(array,(batch_size * channels, rows * cols))
-
-        for k in range(10):
-            print(f"({array[k][0]} , {images[k//3][k%3][0][0]}) ")
-
-        np.savetxt(f'{image_file_name}_{i}.txt',array,delimiter=" ")
-
-    
+    array = np.reshape(array,(batch_size * channels, rows * cols))
+    np.savetxt(f'{file_name}_{batch_size}x{channels}x{rows}x{cols}.txt',array,delimiter=" ")
 
 
-def write_image_to_txt(train_loader,num_of_images,image_file_name):
-
-    
-    for i, (images,labels) in enumerate(train_loader):
-        if i >= num_of_images: break
-
-        print(images)
         
 
 if __name__ == "__main__":
 
-    train_loader, test_loader = data_loader(data_dir="./data",batch_size=64,shuffle=True)
-
-    write_image_to_txt(train_loader,1,"image")
+    #train_loader, test_loader = data_loader(data_dir="./data",batch_size=64,shuffle=True)
 
     #train_model(train_loader,test_loader,20,100,0.005)
 
     train_loader, test_loader = data_loader(data_dir="./data",batch_size=32,shuffle=True)
-    save_batch_image_to_text(train_loader,"batches/batch",2)
+
+    model = VGG16(num_classes=100).to(device)
+
+    with torch.no_grad():
+        for i, (images,labels) in enumerate(train_loader):
+            if i == 1: break
+            images = images.to(device)
+            output = model(images)
+    
+    print(model.output['layer1'].shape)
+    print(model.output['layer2'].shape)
+    print(model.output['layer3'].shape)
+    print(model.output['layer4'].shape)
+    print(model.output['layer5'].shape)
+
+    save_torch_to_text(model.output['layer1'],"layer1_batch")
+    save_torch_to_text(model.output['layer2'],"layer2_batch")
+
+
+    #save_batch_image_to_text(train_loader,"batches/batch",2)
     #train_model(train_loader,test_loader,20,100,0.005))
 
 
