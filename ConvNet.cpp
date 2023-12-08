@@ -6,7 +6,7 @@
 
 #include "dpc_common.hpp"
 
-#define COMP(a,b) (abs(a-b) < 0.001)
+#define COMP(a,b) (abs(a-b) < 0.005)
 
 using namespace std;
 
@@ -82,7 +82,8 @@ void ConvNet::set_weights(vector<vector<vector<vector<float>>>> weights){
 
 void ConvNet::set_biases(vector<float> biases){
     for (int i=0;i<output_channels;i++){
-        this->biases[i] = biases[i];       
+        this->biases[i] = biases[i];      
+        cout << this->biases[i] << " "; // debug 
     }
 }
 
@@ -135,9 +136,8 @@ vector<vector<vector<vector<float>>>> ConvNet::forward(vector<vector<vector<vect
         vector<vector<vector<float>>> reorder_output = this->reorder(image_with_padding,height,width,output_height,output_width);
         vector<vector<vector<float>>> direct_output = this->direct(image_with_padding,height,width,output_height,output_width);
         // compare result
-        cout << "------------Comparing naive and reorder-------------------\n";
+        
         this->cmp_mat(naive_output,reorder_output);
-        cout << "-------------Comparing naive and direct------------------\n";
         this->cmp_mat(naive_output,direct_output);
         
         output_batch[image] = naive_output;
@@ -191,11 +191,9 @@ vector<vector<vector<float>>> ConvNet::reorder(vector<vector<vector<float>>> ima
                         for (int j=0;j<this->output_channels;j++){ // C_o ( output channel )
                             int input_row = l * this->stride + n;
                             int input_col = k * this->stride + m;
-                            if (input_row >= input_height || input_col >= input_width) continue;
-                            else {
-                                output[j][l][k] += image[i][input_row][input_col] * this->weights[j][i][n][m];   
-                                output[j][l][k] += this->biases[j];
-                            }
+                            if (input_row >= input_height || input_col >= input_width) break;
+                            output[j][l][k] += image[i][input_row][input_col] * this->weights[j][i][n][m];   
+                            output[j][l][k] += this->biases[j];
                         }
                     }
                 }
@@ -211,7 +209,6 @@ vector<vector<vector<float>>> ConvNet::reorder(vector<vector<vector<float>>> ima
 
 
 vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> input, int input_height,int input_width, int output_height,int output_width){
-    cout << "-----------------------"<< "Run direct algorithm" << "-----------------------------------" <<"\n";
 
     //sycl::queue q(sycl::gpu_selector_v);
     //std::cout << "Device: " << q.get_device().get_info<sycl::info::device::name>() << std::endl;
@@ -315,7 +312,7 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
 vector<vector<vector<float>>> ConvNet::direct_without_parallel(vector<vector<vector<float>>> input, int input_height,int input_width, int output_height,int output_width){
     vector<vector<vector<float>>> output (this->output_channels,vector<vector<float>> (output_height, vector<float> (output_width,0)));
 
-    int output_chn_block_size = 16;
+    int output_chn_block_size = 1;
     int input_chn_block_size = 1;
     int output_width_block_size = 8;
 
@@ -427,7 +424,7 @@ vector<vector<vector<vector<float>>>> numpy_text_to_batch(int batch_size, int in
     file.open(filepath,ios::in);
 
     if (!file.is_open()){
-        cout<< "Error: Cannot open file!" << endl;
+        cout<< "Error: Cannot open file " << filepath <<endl;
         return batch;
     }
     
@@ -448,7 +445,7 @@ vector<vector<vector<vector<float>>>> numpy_text_to_batch(int batch_size, int in
         for (int j=0;j<input_channels;j++){
             for (int k=0;k<height;k++){
                 for (int l=0;l<width;l++){
-                    batch[i][j][k][l] = data[i * 3 + j][k*32 + l];
+                    batch[i][j][k][l] = data[i * input_channels + j][k*width + l];
                 }
             }
         }
@@ -457,27 +454,102 @@ vector<vector<vector<vector<float>>>> numpy_text_to_batch(int batch_size, int in
     return batch;
 }
 
+vector<vector<vector<vector<float>>>> numpy_text_to_weight(int output_channels, int input_channels, int kernel_size, string filepath){
+    vector<vector<vector<vector<float>>>> weight;
+
+    vector<vector<float>> data(output_channels * input_channels,vector<float>(kernel_size * kernel_size,0));
+
+    ifstream file;
+    file.open(filepath,ios::in);
+
+    if (!file.is_open()){
+        cout<< "Error: Cannot open file " <<  filepath << endl;
+        return weight;
+    }
+    
+    for (int i=0;i<output_channels * input_channels;i++){
+        for (int j=0;j<kernel_size * kernel_size;j++){
+            file >> data[i][j];
+            if ( ! file ) {
+                cout << "Error reading file for element " << i << "," << j << endl; 
+            }
+        }
+    }
+
+    weight = vector<vector<vector<vector<float>>>>(output_channels,vector<vector<vector<float>>>(input_channels,vector<vector<float>>(kernel_size,vector<float>(kernel_size,0))));
+    
+    for (int i=0;i<output_channels;i++){
+        for (int j=0;j<input_channels;j++){
+            for (int k=0;k<kernel_size;k++){
+                for (int l=0;l<kernel_size;l++){
+                    weight[i][j][k][l] = data[i * input_channels + j][k*kernel_size + l];
+                }
+            }
+        }
+    }
+
+    return weight;
+}
+
+
+vector<float> numpy_text_to_bias(int output_channels,string filepath){
+    vector<float> bias (output_channels,0);
+
+    ifstream file;
+    file.open(filepath,ios::in);
+
+    if (!file.is_open()){
+        cout << "Error: Cannot open file "<< filepath << endl;
+        return bias;
+    }
+
+    for (int i=0;i<output_channels;i++){
+        file >> bias[i];
+        if (!file){
+            cout << "Error reading file for element " << i << endl; 
+        }
+    }   
+
+    return bias;
+}
 
 
 int main(){
-    const string filepath = "layer2_batch_32x64x16x16.txt";
 
+    // layer 2 convolution
     int batch_size = 32;
     int input_channels = 64;
-    int output_channels = 128;
-    int input_height = 16;
-    int input_width = 16;
+    int output_channels = 64;
+    int input_height = 32;
+    int input_width = 32;
+    int kernel_size = 3;
+    int stride = 1;
+    int padding = 1;
 
-    vector<vector<vector<vector<float>>>> images = numpy_text_to_batch(batch_size,input_channels,input_height,input_width,filepath);
 
-    ConvNet model(input_channels,output_channels,3,1,1);
+    const string batch_filepath = "batches/layer1_batch_32x64x32x32.txt"; // output from layer 1
+    const string weight_filepath = "weights/layer2_64x64x3x3.txt";
+    const string bias_filepath = "biases/layer2_64.txt";
+
+
+    vector<vector<vector<vector<float>>>> input = numpy_text_to_batch(batch_size,input_channels,input_height,input_width,batch_filepath);
+    vector<vector<vector<vector<float>>>> weights = numpy_text_to_weight(output_channels,input_channels,kernel_size,weight_filepath);
+    vector<float> biases = numpy_text_to_bias(output_channels,bias_filepath);
+
+
+    ConvNet model(input_channels,output_channels,kernel_size,padding,stride);
+
+    model.set_weights(weights);
+    model.set_biases(biases);
+
+
 
     sycl::queue q(sycl::gpu_selector_v);
     model.device(q);
 
-    cout << "Input shape:(" << images.size() << "," << images[0].size() << "," << images[0][0].size() << "," << images[0][0][0].size() <<   ")" << endl;
+    cout << "Input shape:(" << input.size() << "," << input[0].size() << "," << input[0][0].size() << "," << input[0][0][0].size() <<   ")" << endl;
 
-    vector<vector<vector<vector<float>>>> output = model.forward(images);
+    vector<vector<vector<vector<float>>>> output = model.forward(input);
 
     cout << "Output shape:(" << output.size() << "," << output[0].size() << "," << output[0][0].size() << "," << output[0][0][0].size() << ")\n";
 

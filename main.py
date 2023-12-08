@@ -75,8 +75,7 @@ def train_model(train_loader,test_loader,num_epochs,num_classes,learning_rate):
         },"./checkpoint/VGG16_model_checkpt.pt")
         print("Save model to checkpoint")
 
-def save_torch_to_text(torch_array,file_name):
-    array = torch_array.numpy()
+def save_batch_to_text(array,file_name):
     print(array.shape)
     batch_size = array.shape[0]
     channels = array.shape[1]
@@ -86,8 +85,21 @@ def save_torch_to_text(torch_array,file_name):
     array = np.reshape(array,(batch_size * channels, rows * cols))
     np.savetxt(f'{file_name}_{batch_size}x{channels}x{rows}x{cols}.txt',array,delimiter=" ")
 
+def save_weight_to_text(array,file_name):
+    print(array.shape)
+    output_channel = array.shape[0]
+    input_channel = array.shape[1]
+    rows = array.shape[2]
+    cols = array.shape[3]
 
-        
+    array = np.reshape(array,(output_channel * input_channel, rows * cols))
+    np.savetxt(f'{file_name}_{output_channel}x{input_channel}x{rows}x{cols}.txt',array,delimiter=" ")
+
+def save_bias_to_text(array,file_name):
+    print(array.shape)
+    output_channel = array.shape[0]
+
+    np.savetxt(f'{file_name}_{output_channel}.txt',array,delimiter=" ")
 
 if __name__ == "__main__":
 
@@ -105,16 +117,20 @@ if __name__ == "__main__":
             images = images.to(device)
             output = model(images)
     
-    print(model.output['layer1'].shape)
-    print(model.output['layer2'].shape)
-    print(model.output['layer3'].shape)
-    print(model.output['layer4'].shape)
-    print(model.output['layer5'].shape)
+    layers = [f'layer{x}' for x in range(1,14)]
 
-    save_torch_to_text(model.output['layer1'],"layer1_batch")
-    save_torch_to_text(model.output['layer2'],"layer2_batch")
+    #for layer in layers:
+    #    save_torch_to_text(model.output[layer],f"batches/{layer}_batch")
 
 
+    weights = model.get_weights()
+    biases = model.get_biases()
+
+    for layer in layers:
+        save_weight_to_text(weights[layer],f"weights/{layer}")
+        save_bias_to_text(biases[layer],f"biases/{layer}")
+
+        
     #save_batch_image_to_text(train_loader,"batches/batch",2)
     #train_model(train_loader,test_loader,20,100,0.005))
 
