@@ -5,5 +5,8 @@ batch-job
 env
 .vscode
 .vs
+batches
+biases
+weights
 
 

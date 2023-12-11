@@ -63,7 +63,7 @@ class VGG16(nn.Module):
             nn.MaxPool2d(kernel_size = 2, stride = 2))
         self.fc = nn.Sequential(
             nn.Dropout(0.5),
-            nn.Linear(512, 4096),
+            nn.Linear(7*7*512, 4096),
             nn.ReLU())
         self.fc1 = nn.Sequential(
             nn.Dropout(0.5),

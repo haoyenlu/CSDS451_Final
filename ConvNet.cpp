@@ -1,7 +1,6 @@
 #include <vector>
 #include <iostream>
 #include <string>
-#include <fstream>
 #include <sycl/sycl.hpp>
 
 #include "dpc_common.hpp"
@@ -10,11 +9,8 @@
 
 using namespace std;
 
-
 class ConvNet{
     private:
-        vector<vector<vector<vector<float>>>> weights; // shape: (output_channel,input_channel,kernel_size,kernel_size)
-        vector<float> biases; // shape: output_channel
         unsigned input_channels;
         unsigned output_channels;
         unsigned stride;
@@ -23,28 +19,34 @@ class ConvNet{
 
         sycl::queue Q;
 
-        float****weights_usm;
-        float*biases_usm;
+        vector<float> weights;
+        vector<float> biases;
+        float* weights_usm; // weight in share memory
+        float* biases_usm;  // bias in share memory 
 
+    public:
+        vector<double> naive_time;
+        vector<double> reorder_time;
+        vector<double> direct_time;
+        
     public:
         ConvNet(){};
         ~ConvNet();
         ConvNet(unsigned input_channel, unsigned output_channel, unsigned kernel, unsigned padding, unsigned stride);
-        vector<vector<vector<vector<float>>>> forward(vector<vector<vector<vector<float>>>> input);
+        vector<vector<float>> forward(vector<vector<float>>& input,int batch_size, int input_height, int input_width);
 
-        void set_weights(vector<vector<vector<vector<float>>>> weights);
+        void set_weights(vector<float> weights);
         void set_biases(vector<float> biases);
 
-        vector<vector<vector<float>>> add_padding(vector<vector<vector<float>>> image);
+        vector<float> add_padding(vector<float> input,int input_height,int input_width);
 
-        vector<vector<vector<float>>> im2col(vector<vector<vector<float>>> image);
-        bool cmp_mat(vector<vector<vector<float>>> o1, vector<vector<vector<float>>> o2);
+        bool cmp_mat(vector<float> o1, vector<float> o2,int output_height, int output_width);
 
         // algorithm
-        vector<vector<vector<float>>> reorder(vector<vector<vector<float>>> image,int input_height,int input_width,int output_height, int output_width);
-        vector<vector<vector<float>>> naive(vector<vector<vector<float>>> image,int input_height,int input_width,int output_height,int output_width);
-        vector<vector<vector<float>>> direct(vector<vector<vector<float>>> image, int input_height,int input_width, int output_height, int output_width);
-        vector<vector<vector<float>>> direct_without_parallel(vector<vector<vector<float>>> image, int input_height,int input_width, int output_height, int output_width);
+        vector<float> reorder(vector<float> &input,int input_height,int input_width,int output_height, int output_width);
+        vector<float> naive(vector<float> &input,int input_height,int input_width,int output_height,int output_width);
+        vector<float> direct(vector<float> &input, int input_height,int input_width, int output_height, int output_width);
+    
 
         void device(sycl::queue Q);
 };
@@ -57,8 +59,8 @@ ConvNet::ConvNet(unsigned input_channel, unsigned output_channel, unsigned kerne
     this->stride = stride;
     this->padding = padding;
 
-    this->weights = vector<vector<vector<vector<float>>>>(output_channel,vector<vector<vector<float>>>(input_channel, vector<vector<float>>(kernel,vector<float> (kernel,0.5))));
-    this->biases = vector<float>(output_channel,0.5);
+    this->weights = vector<float>(output_channel * input_channel * kernel * kernel,0);
+    this->biases = vector<float>(output_channel,0);
 }
 
 ConvNet::~ConvNet(){
@@ -66,89 +68,67 @@ ConvNet::~ConvNet(){
     free(this->biases_usm,this->Q);
 }
 
-void ConvNet::set_weights(vector<vector<vector<vector<float>>>> weights){
-    for (int i=0;i<this->output_channels;i++){
-        for (int j=0;j<this->input_channels;j++){
-            for (int k=0;i<kernel;i++){
-                for (int l=0;j<kernel;j++){
-                    float w =  weights[i][j][k][l];
-                    this->weights[i][j][k][l] = w;
-                }
-            }
-        }
+void ConvNet::set_weights(vector<float> weights){
+    for (int i=0;i<this->output_channels * this->input_channels * this->kernel * this->kernel;i++){
+        this->weights[i] = weights[i];
     }
-
 }
 
 void ConvNet::set_biases(vector<float> biases){
-    for (int i=0;i<output_channels;i++){
+    for (int i=0;i<this->output_channels;i++){
         this->biases[i] = biases[i];      
-        cout << this->biases[i] << " "; // debug 
     }
 }
 
-vector<vector<vector<float>>> ConvNet::add_padding(vector<vector<vector<float>>> input){
-    size_t input_channels = input.size();
-    size_t height = input[0].size(); // number of row
-    size_t width = input[0][0].size(); // number of column
+vector<float> ConvNet::add_padding(vector<float> input,int input_height,int input_width){
+    int input_height_with_padding = input_height + this->padding * 2;
+    int input_width_with_padding = input_width + this->padding * 2;
 
-    // printf("Input Shape:(%zu,%zu,%zu)\n",input_channels,height,width);
-
-    vector<vector<vector<float>>> input_with_padding(input_channels,vector<vector<float>> (height + this->padding * 2, vector<float> (width + this->padding * 2,0)));
+    vector<float> input_with_padding (this->input_channels * input_height_with_padding * input_width_with_padding,0);
 
     for (int i=0;i<input_channels;i++){
-        for (int j=0;j<height;j++){
-            for (int k=0;k<width;k++){
-                input_with_padding[i][j+this->padding][k+this->padding] = input[i][j][k];
+        for (int j=0;j<input_height;j++){
+            for (int k=0;k<input_width;k++){
+                input_with_padding[(i * input_height + j + this->padding ) * input_width + k +this->padding] = input[( i * input_height + j ) * input_width +  k];
             }
         }
     }
-
-    printf("Input with padding Shape:(%zu,%zu,%zu)\n",input_with_padding.size(),input_with_padding[0].size(),input_with_padding[0][0].size());
 
     return input_with_padding;
 
 }
 
-vector<vector<vector<vector<float>>>> ConvNet::forward(vector<vector<vector<vector<float>>>> input){
-    int batches = input.size();
-    int input_channel = input[0].size();
-    int height = input[0][0].size();
-    int width = input[0][0][0].size();
+vector<vector<float>> ConvNet::forward(vector<vector<float>> &input, int batch_size , int input_height, int input_width){
+    int output_height = ((input_height - this->kernel + 2 * this->padding) / this->stride) + 1;
+    int output_width = ((input_width - this->kernel + 2 * this->padding) / this->stride) + 1;
+    vector<vector<float>> output_batch ( batch_size, vector<float>(this->output_channels * output_height * output_width,0.0));
 
-    int output_height = ((height - this->kernel + 2 * this->padding) / this->stride) + 1;
-    int output_width = ((width - this->kernel + 2 * this->padding) / this->stride) + 1;
-    vector<vector<vector<vector<float>>>> output_batch (batches, vector<vector<vector<float>>>(this->output_channels, vector<vector<float>> (output_height, vector<float>(output_width,0))));
+    input_height = input_height + 2 * this->padding;
+    input_width = input_width + 2 * this->padding;
 
-    if (input_channel != this->input_channels){
-        printf("Error: Input has %d channels, which is different than the required %d channels",input_channel,this->input_channels);
-        return output_batch;
-    }
+    for (int index = 0; index < batch_size; index ++){
 
-    height = height + 2 * this->padding;
-    width = width + 2 * this->padding;
-
-    for (int image = 0; image < batches; image ++){
         // add padding 
-        vector<vector<vector<float>>> image_with_padding = this->add_padding(input[image]);
+        vector<float> image_with_padding = this->add_padding(input[index],input_height,input_width);
         // run algorithm
-        vector<vector<vector<float>>> naive_output = this->naive(image_with_padding,height,width,output_height,output_width);
-        vector<vector<vector<float>>> reorder_output = this->reorder(image_with_padding,height,width,output_height,output_width);
-        vector<vector<vector<float>>> direct_output = this->direct(image_with_padding,height,width,output_height,output_width);
+        vector<float> naive_output = this->naive(image_with_padding,input_height,input_width,output_height,output_width);
+        vector<float> reorder_output = this->reorder(image_with_padding,input_height,input_width,output_height,output_width);
+        vector<float> direct_output = this->direct(image_with_padding,input_height,input_width,output_height,output_width);
+        
         // compare result
-        
-        this->cmp_mat(naive_output,reorder_output);
-        this->cmp_mat(naive_output,direct_output);
-        
-        output_batch[image] = naive_output;
+        this->cmp_mat(naive_output,reorder_output,output_height,output_width);
+        this->cmp_mat(reorder_output,direct_output,output_height,output_width);
+    
+        output_batch[index] = reorder_output;
     }
     return output_batch;
 }
 
 // naive convolution algorithm
-vector<vector<vector<float>>> ConvNet::naive(vector<vector<vector<float>>> image,int input_height,int input_width,int output_height,int output_width){
-    vector<vector<vector<float>>> output (this->output_channels,vector<vector<float>> (output_height, vector<float> (output_width,0)));
-    
+vector<float> ConvNet::naive(vector<float> &input,int input_height,int input_width,int output_height,int output_width){
+
+    vector<float> output (this->output_channels * output_height * output_width,0);
+
     dpc_common::TimeInterval time; // Timing the Convolution Algorithm
 
     for (int i=0;i<this->input_channels;i++){
@@ -160,8 +140,7 @@ vector<vector<vector<float>>> ConvNet::naive(vector<vector<vector<float>>> image
                             int input_row = l * this->stride + n;
                             int input_col = k * this->stride + m;
                             if (input_row >= input_height || input_col >= input_width) break;
-                            output[j][l][k] += image[i][input_row][input_col] * this->weights[j][i][n][m];         
-                            output[j][l][k] += this->biases[j];    
+                            output[(j * output_height + l) * output_width + k] += input[(i * input_height + input_row) * input_width + input_col] * this->weights[((j * this->input_channels + i ) * this->kernel + n) * this->kernel + m];            
                         }
                     }
                 }
@@ -173,13 +152,15 @@ vector<vector<vector<float>>> ConvNet::naive(vector<vector<vector<float>>> image
     double time_elapsed = time.Elapsed();
     cout << "Naive Convolution Time: " << time_elapsed << endl;
 
+    this->naive_time.push_back(time_elapsed);
+
     return output;
 }
 
 
 // reorder the loop of naive convolution algorithm
-vector<vector<vector<float>>> ConvNet::reorder(vector<vector<vector<float>>> image, int input_height, int input_width, int output_height, int output_width){
-    vector<vector<vector<float>>> output (this->output_channels,vector<vector<float>> (output_height, vector<float> (output_width,0)));
+vector<float> ConvNet::reorder(vector<float> &input, int input_height, int input_width, int output_height, int output_width){
+    vector<float> output (this->output_channels * output_height * output_width,0);
     
     dpc_common::TimeInterval time; // Timing the Convolution Algorithm
 
@@ -192,8 +173,7 @@ vector<vector<vector<float>>> ConvNet::reorder(vector<vector<vector<float>>> ima
                             int input_row = l * this->stride + n;
                             int input_col = k * this->stride + m;
                             if (input_row >= input_height || input_col >= input_width) break;
-                            output[j][l][k] += image[i][input_row][input_col] * this->weights[j][i][n][m];   
-                            output[j][l][k] += this->biases[j];
+                            output[(j * output_height + l) * output_width + k] += input[(i * input_height + input_row) * input_width + input_col] * this->weights[((j * this->input_channels + i ) * this->kernel + n) * this->kernel + m];             
                         }
                     }
                 }
@@ -204,37 +184,25 @@ vector<vector<vector<float>>> ConvNet::reorder(vector<vector<vector<float>>> ima
     double time_elapsed = time.Elapsed();
     cout << "Reorder Convolution Time: " << time_elapsed << endl;
 
+    this->reorder_time.push_back(time_elapsed);
+
     return output;
 }
 
 
-vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> input, int input_height,int input_width, int output_height,int output_width){
+vector<float> ConvNet::direct(vector<float> &input, int input_height,int input_width, int output_height,int output_width){
 
-    //sycl::queue q(sycl::gpu_selector_v);
-    //std::cout << "Device: " << q.get_device().get_info<sycl::info::device::name>() << std::endl;
-
-    float ***output_share = sycl::malloc_shared<float**>(this->output_channels,this->Q);
-    for (int i=0;i<this->output_channels;i++){
-        output_share[i] = sycl::malloc_shared<float*>(output_height, this->Q);
-        for (int j=0;j<output_height;j++){
-            output_share[i][j] = sycl::malloc_shared<float>(output_width,this->Q);
-            for (int k=0;k<output_width;k++){
-                output_share[i][j][k] = 0;
-            }
-        }
+    float *output_share = sycl::malloc_shared<float>(this->output_channels * output_height * output_width,this->Q);
+    for (int i=0;i<this->output_channels * output_height * output_width;i++){
+        output_share[i] = 0;
     }
-    float ***image_share = sycl::malloc_shared<float**>(this->input_channels,this->Q);
-    for (int i=0;i<this->input_channels;i++){
-        image_share[i] = sycl::malloc_shared<float*>(input_height,this->Q);
-        for (int h=0;h<input_height;h++){
-            image_share[i][h] = sycl::malloc_shared<float>(input_width,this->Q);
-            for (int w=0;w<input_width;w++){
-                image_share[i][h][w] = input[i][h][w];
-            }
-        }
+
+    float *input_share = sycl::malloc_shared<float>(this->input_channels * input_height * input_width,this->Q);
+    for (int i=0;i<this->input_channels * input_height * input_width ;i++){
+        input_share[i] = input[i];
     }
     
-    float ****weights_share = this->weights_usm;
+    float *weights_share = this->weights_usm;
     float *biases_share = this->biases_usm;
 
     dpc_common::TimeInterval time; // Timing the Convolution Algorithm
@@ -246,7 +214,7 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
         int kernel = this->kernel;
 
         int output_chn_block_size = 1;
-        int input_chn_block_size = 1;
+        int input_chn_block_size = 16;
         int output_width_block_size = 16;
 
         int output_chn_block_cnt = static_cast<int>(output_channels / output_chn_block_size );
@@ -275,10 +243,9 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
                                         for (int jj=0;jj<output_chn_block_size;jj++){
                                             int block_output_chn = j * output_chn_block_size  + jj; 
                                             if (block_output_chn >= output_channels) break;
-                                            float ans = image_share[block_input_chn][block_input_height][block_input_width] * weights_share[block_output_chn][block_input_chn][n][m];
+                                            float ans = input_share[(block_input_chn* input_height + block_input_height) * input_width + block_input_width] * weights_share[((block_output_chn * input_channels + block_input_chn) * kernel + n ) * kernel + m];
 
-                                            output_share[block_output_chn][l][block_output_width] += ans;
-                                            output_share[block_output_chn][l][block_output_width] += biases_share[block_output_chn];
+                                            output_share[(block_output_chn * output_height + l) * output_width + block_output_width] += ans;
                                         }       
                                     }
                                 }
@@ -294,99 +261,34 @@ vector<vector<vector<float>>> ConvNet::direct(vector<vector<vector<float>>> inpu
     double time_elapsed = time.Elapsed();
     cout << "Direct Convolution Time: " << time_elapsed << endl;
 
-    vector<vector<vector<float>>> output_result (this->output_channels, vector<vector<float>> (output_height, vector<float>(output_width,0)));
-    for (int i=0;i<this->output_channels;i++){
-        for(int j=0;j<output_height;j++){
-            for (int k=0;k<output_width;k++){
-                output_result[i][j][k] = output_share[i][j][k];
-            }
-        }
+    this->direct_time.push_back(time_elapsed);
+
+    vector<float> output_result (this->output_channels * output_height * output_width,0);
+    for (int i=0;i<this->output_channels * output_height * output_width;i++){
+        output_result[i] = output_share[i];
     }
 
     free(output_share,this->Q);
-    free(image_share,this->Q);
+    free(input_share,this->Q);
 
     return output_result;
 }
 
-vector<vector<vector<float>>> ConvNet::direct_without_parallel(vector<vector<vector<float>>> input, int input_height,int input_width, int output_height,int output_width){
-    vector<vector<vector<float>>> output (this->output_channels,vector<vector<float>> (output_height, vector<float> (output_width,0)));
 
-    int output_chn_block_size = 1;
-    int input_chn_block_size = 1;
-    int output_width_block_size = 8;
-
-    int output_chn_block_cnt = static_cast<int>(this->output_channels / output_chn_block_size );
-    int input_chn_block_cnt = static_cast<int>(this->input_channels / input_chn_block_size);
-    int output_width_block_cnt = static_cast<int>(output_width / output_width_block_size);
-
-    for (int j=0;j<output_chn_block_cnt;j++){
-        for (int i=0;i< input_chn_block_cnt;i++){
-            for (int l=0;l<output_height;l++){
-                for (int k=0;k<output_width_block_cnt;k++){
-                    for (int n=0;n<this->kernel;n++){
-                        int block_input_height = l * stride + n;
-                        if (block_input_height >= input_height) break;
-
-                
-                        for (int m=0;m<this->kernel;m++){
-                            for (int ii=0;ii<input_chn_block_size;ii++){
-                                int block_input_chn = i * input_chn_block_size + ii;
-                                if (block_input_chn >= input_channels) break;
-
-                                for (int kk=0;kk<output_width_block_size;kk++){
-                                    int block_output_width = k * output_width_block_size  + kk;
-                                    int block_input_width = stride * block_output_width + m;
-                                    if (block_output_width >= output_width || block_input_width >= input_width) break;
-
-                                    for (int jj=0;jj<output_chn_block_size;jj++){
-                                        int block_output_chn = j * output_chn_block_size  + jj; 
-                                        if (block_output_chn >= output_channels) break;
-                                        float ans = input[block_input_chn][block_input_height][block_input_width] * this->weights[block_output_chn][block_input_chn][n][m];
-
-                                        output[block_output_chn][l][block_output_width] += ans;
-                                        output[block_output_chn][l][block_output_width] += biases[block_output_chn];
-                                    }       
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return output;
-}
-
-bool ConvNet::cmp_mat(vector<vector<vector<float>>> o1, vector<vector<vector<float>>> o2){
-    // compare size
-    int o1_c = o1.size();
-    int o1_h = o1[0].size();
-    int o1_w = o1[0][0].size();
-
-    int o2_c = o2.size();
-    int o2_h = o2[0].size();
-    int o2_w = o2[0][0].size();
-    if (o1_c != o2_c || o1_h != o2_h || o1_w != o2_w ){
-        printf("Error: Two matrix has different size. matrix_1 size: (%d,%d,%d), matrix_2 size:(%d,%d,%d)\n", o1_c,o1_h,o1_w,o2_c,o2_h,o2_w);
-        return false;
-    }
-
+bool ConvNet::cmp_mat(vector<float> o1, vector<float> o2,int output_height , int output_width){
     // compare value
     bool same = true;
     int number_of_difference = 0;
-    for (int c=0;c<o1_c;c++){
-        for (int h=0;h<o1_h;h++){
-            for (int w=0;w<o1_w;w++){
-                if (!COMP(o1[c][h][w],o2[c][h][w])){
-                    if (same) printf("Two matrix has different value at (%d,%d,%d). matrix_1 value: %f, matrix_2 value: %f\n",c,h,w,o1[c][h][w], o2[c][h][w]);
-                    number_of_difference += 1;
-                    same = false;
-                }
+    for (int i=0;i<this->output_channels * output_height * output_width;i++){
+        if (!COMP(o1[i],o2[i])){
+            if (same) {
+                printf("Two matrix have different values at %d: ( %f, %f)\n",i,o1[i],o2[i]);
+                same = false;
             }
+            number_of_difference ++;
         }
     }
-    cout << "Number of difference: "<<number_of_difference << endl;
+    cout << "Number of difference: "<< number_of_difference << endl;
     return same;
 }
 
@@ -394,31 +296,20 @@ void ConvNet::device(sycl::queue Q){
     this->Q = Q;
     cout << "Device: " << this->Q.get_device().get_info<sycl::info::device::name>() << "\n";
 
-    this->weights_usm = sycl::malloc_shared<float***>(this->output_channels,this->Q);
-    for (int i=0;i<this->output_channels;i++){
-        weights_usm[i] = sycl::malloc_shared<float**>(this->input_channels,this->Q);
-        for (int j=0;j<this->input_channels;j++){
-            weights_usm[i][j] = sycl::malloc_shared<float*>(this->kernel,this->Q);
-            for (int k=0;k<this->kernel;k++){
-                weights_usm[i][j][k] = sycl::malloc_shared<float>(this->kernel,this->Q);
-                for (int q=0;q<this->kernel;q++){
-                    weights_usm[i][j][k][q] = this->weights[i][j][k][q];
-                }
-            }
-        }
+    this->weights_usm = sycl::malloc_shared<float>(this->output_channels * this->input_channels * this->kernel * this->kernel,this->Q);
+    for (int i=0;i<this->output_channels * this->input_channels * this->kernel * this->kernel ;i++){
+        this->weights_usm[i] = this->weights[i];
     }
 
     this->biases_usm = sycl::malloc_shared<float>(this->output_channels,this->Q);
     for (int i=0;i<this->output_channels;i++){
-        biases_usm[i] = this->biases[i];
+        this->biases_usm[i] = this->biases[i];
     }
 }
 
-
-vector<vector<vector<vector<float>>>> numpy_text_to_batch(int batch_size, int input_channels, int height, int width, string filepath){
-    vector<vector<vector<vector<float>>>> batch;
-
-    vector<vector<float>> data(batch_size * input_channels,vector<float>(height * width,0));
+vector<vector<float>> numpy_text_to_batch(int batch_size, int input_channels, int height, int width, string filepath){
+    cout << "Reading file: " << filepath << endl;
+    vector<vector<float>> batch = vector<vector<float>> ( batch_size, vector<float>(input_channels * height* width,0));
 
     ifstream file;
     file.open(filepath,ios::in);
@@ -428,36 +319,23 @@ vector<vector<vector<vector<float>>>> numpy_text_to_batch(int batch_size, int in
         return batch;
     }
     
-    for (int i=0;i<batch_size * input_channels;i++){
-        for (int j=0;j<height * width;j++){
-            file >> data[i][j];
+    for (int i=0;i<batch_size;i++){
+        for (int j=0;j<input_channels * height * width; j++){
+            file >> batch[i][j];
             if ( ! file ) {
                 cout << "Error reading file for element " << i << "," << j << endl; 
             }
         }
-    }
 
-    // printf("Data Shape:(%d,%d)",data.size(),data[0].size());
-
-    batch = vector<vector<vector<vector<float>>>>(batch_size,vector<vector<vector<float>>>(input_channels,vector<vector<float>>(height,vector<float>(width,0))));
-    
-    for (int i=0;i<batch_size;i++){
-        for (int j=0;j<input_channels;j++){
-            for (int k=0;k<height;k++){
-                for (int l=0;l<width;l++){
-                    batch[i][j][k][l] = data[i * input_channels + j][k*width + l];
-                }
-            }
-        }
     }
 
     return batch;
 }
 
-vector<vector<vector<vector<float>>>> numpy_text_to_weight(int output_channels, int input_channels, int kernel_size, string filepath){
-    vector<vector<vector<vector<float>>>> weight;
+vector<float> numpy_text_to_weight(int output_channels, int input_channels, int kernel_size, string filepath){
+    cout << "Reading file: " << filepath << endl;
 
-    vector<vector<float>> data(output_channels * input_channels,vector<float>(kernel_size * kernel_size,0));
+    vector<float> weight (output_channels * input_channels * kernel_size * kernel_size,0);
 
     ifstream file;
     file.open(filepath,ios::in);
@@ -467,32 +345,21 @@ vector<vector<vector<vector<float>>>> numpy_text_to_weight(int output_channels, 
         return weight;
     }
     
-    for (int i=0;i<output_channels * input_channels;i++){
-        for (int j=0;j<kernel_size * kernel_size;j++){
-            file >> data[i][j];
-            if ( ! file ) {
-                cout << "Error reading file for element " << i << "," << j << endl; 
-            }
+    for (int i=0;i<output_channels * input_channels * kernel_size * kernel_size;i++){
+        file >> weight[i];
+        if ( ! file ) {
+            cout << "Error reading file for element " << i << endl; 
         }
     }
 
-    weight = vector<vector<vector<vector<float>>>>(output_channels,vector<vector<vector<float>>>(input_channels,vector<vector<float>>(kernel_size,vector<float>(kernel_size,0))));
-    
-    for (int i=0;i<output_channels;i++){
-        for (int j=0;j<input_channels;j++){
-            for (int k=0;k<kernel_size;k++){
-                for (int l=0;l<kernel_size;l++){
-                    weight[i][j][k][l] = data[i * input_channels + j][k*kernel_size + l];
-                }
-            }
-        }
-    }
 
     return weight;
 }
 
 
 vector<float> numpy_text_to_bias(int output_channels,string filepath){
+    cout << "Reading file: " << filepath << endl;
+    
     vector<float> bias (output_channels,0);
 
     ifstream file;
@@ -513,27 +380,38 @@ vector<float> numpy_text_to_bias(int output_channels,string filepath){
     return bias;
 }
 
+void write_performance_time_to_csv(vector<double> naive_time,vector<double> reorder_time, vector<double> direct_time, string output_filename){
+    ofstream file;
+    file.open(output_filename);
+    file << "naive,reorder,direct\n"; // first row in the csv
+
+    int batch_size = naive_time.size();
+    for (int i=0;i<batch_size;i++){
+        file << naive_time[i] << ',' << reorder_time[i] << ',' << direct_time[i] << "\n";
+    }
+}
+
 
 int main(){
 
     // layer 2 convolution
     int batch_size = 32;
-    int input_channels = 64;
-    int output_channels = 64;
-    int input_height = 32;
-    int input_width = 32;
+    int input_channels = 128;
+    int output_channels = 128;
+    int input_height = 16;
+    int input_width = 16;
     int kernel_size = 3;
     int stride = 1;
     int padding = 1;
 
 
-    const string batch_filepath = "batches/layer1_batch_32x64x32x32.txt"; // output from layer 1
-    const string weight_filepath = "weights/layer2_64x64x3x3.txt";
-    const string bias_filepath = "biases/layer2_64.txt";
+    const string batch_filepath = "batches/layer3_batch_" + to_string(batch_size) + 'x' + to_string(input_channels) + 'x' + to_string(input_height) + 'x' + to_string(input_width) + ".txt"; // output from layer 2
+    const string weight_filepath = "weights/layer4_" + to_string(output_channels) + 'x' + to_string(input_channels) + 'x' + to_string(kernel_size) + 'x' + to_string(kernel_size) + ".txt";
+    const string bias_filepath = "biases/layer4_" + to_string(output_channels) + ".txt";
 
 
-    vector<vector<vector<vector<float>>>> input = numpy_text_to_batch(batch_size,input_channels,input_height,input_width,batch_filepath);
-    vector<vector<vector<vector<float>>>> weights = numpy_text_to_weight(output_channels,input_channels,kernel_size,weight_filepath);
+    vector<vector<float>> input = numpy_text_to_batch(batch_size,input_channels,input_height,input_width,batch_filepath);
+    vector<float> weights = numpy_text_to_weight(output_channels,input_channels,kernel_size,weight_filepath);
     vector<float> biases = numpy_text_to_bias(output_channels,bias_filepath);
 
 
@@ -547,13 +425,26 @@ int main(){
     sycl::queue q(sycl::gpu_selector_v);
     model.device(q);
 
-    cout << "Input shape:(" << input.size() << "," << input[0].size() << "," << input[0][0].size() << "," << input[0][0][0].size() <<   ")" << endl;
+    vector<vector<float>> output = model.forward(input,batch_size,input_height,input_width);
 
-    vector<vector<vector<vector<float>>>> output = model.forward(input);
+    string output_filename = "csv/layer4_" + to_string(input_channels) + 'x' + to_string(output_channels) + ".csv";
+    write_performance_time_to_csv(model.naive_time,model.reorder_time,model.direct_time,output_filename);
 
-    cout << "Output shape:(" << output.size() << "," << output[0].size() << "," << output[0][0].size() << "," << output[0][0][0].size() << ")\n";
+    for (int i=0;i< output[0].size();i++){
+        cout << output[0][i] << " ";
+    }
 
+    /* (Compare result with the output from the pytorch Conv2d)
 
+    string output_filepath = "output/layer2_output_32x64x32x32.txt"; // output
+
+    vector<vector<vector<vector<float>>>> output_pytorch = numpy_text_to_batch(batch_size,output_channels,input_height,input_width,output_filepath);
+
+    for (int batch=0;batch < batch_size;batch++){
+        model.cmp_mat(output_pytorch[batch],output[batch]);
+    }
+
+    */
  
     return 0;
 }

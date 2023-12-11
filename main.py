@@ -16,7 +16,7 @@ def data_loader(data_dir,batch_size,shuffle=True):
     std = [0.24703233, 0.24348505, 0.26158768]
 
     transform = transforms.Compose([
-        transforms.Resize((32,32)),
+        transforms.Resize((32*7,32*7)),
         transforms.ToTensor(),
         transforms.Normalize(mean=mean,std=std)
     ])
@@ -101,6 +101,18 @@ def save_bias_to_text(array,file_name):
 
     np.savetxt(f'{file_name}_{output_channel}.txt',array,delimiter=" ")
 
+
+def conv_output(output_channel,input_channel,weight,bias,kernel_size,stride,padding,input):
+    conv = nn.Conv2d(input_channel,output_channel,kernel_size = kernel_size,stride = stride,padding = padding)
+    print(bias)
+    with torch.no_grad():
+        conv.weight = nn.Parameter(torch.from_numpy(weight).float(),requires_grad=False)
+        conv.bias = nn.Parameter(torch.from_numpy(bias).float(),requires_grad=False)
+        input_tensor = torch.from_numpy(input)
+        output = conv(input_tensor)
+    
+    return output.detach().numpy()
+
 if __name__ == "__main__":
 
     #train_loader, test_loader = data_loader(data_dir="./data",batch_size=64,shuffle=True)
@@ -114,21 +126,27 @@ if __name__ == "__main__":
     with torch.no_grad():
         for i, (images,labels) in enumerate(train_loader):
             if i == 1: break
+            save_batch_to_text(images,f"batches/layer0_batch")
             images = images.to(device)
             output = model(images)
     
     layers = [f'layer{x}' for x in range(1,14)]
 
     #for layer in layers:
-    #    save_torch_to_text(model.output[layer],f"batches/{layer}_batch")
+    #    save_batch_to_text(model.output[layer],f"batches/{layer}_batch")
 
 
-    weights = model.get_weights()
-    biases = model.get_biases()
+    #weights = model.get_weights()
+    #biases = model.get_biases()
 
-    for layer in layers:
-        save_weight_to_text(weights[layer],f"weights/{layer}")
-        save_bias_to_text(biases[layer],f"biases/{layer}")
+    #for layer in layers:
+    #    save_weight_to_text(weights[layer],f"weights/{layer}")
+    #    save_bias_to_text(biases[layer],f"biases/{layer}")
+    
+
+    #output = conv_output(64,64,weights['layer2'],biases['layer2'],3,1,1,model.output['layer1'])
+    #print(output.shape)
+    #save_batch_to_text(output,f"output/layer2_output")
 
         
     #save_batch_image_to_text(train_loader,"batches/batch",2)
