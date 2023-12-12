@@ -16,7 +16,7 @@ def data_loader(data_dir,batch_size,shuffle=True):
     std = [0.24703233, 0.24348505, 0.26158768]
 
     transform = transforms.Compose([
-        transforms.Resize((32*7,32*7)),
+        transforms.Resize((4*32,4*32)),
         transforms.ToTensor(),
         transforms.Normalize(mean=mean,std=std)
     ])
@@ -83,6 +83,7 @@ def save_batch_to_text(array,file_name):
     cols = array.shape[3]
 
     array = np.reshape(array,(batch_size * channels, rows * cols))
+    print(array.shape)
     np.savetxt(f'{file_name}_{batch_size}x{channels}x{rows}x{cols}.txt',array,delimiter=" ")
 
 def save_weight_to_text(array,file_name):
@@ -121,19 +122,19 @@ if __name__ == "__main__":
 
     train_loader, test_loader = data_loader(data_dir="./data",batch_size=32,shuffle=True)
 
-    model = VGG16(num_classes=100).to(device)
+    model = VGG16(num_classes=10).to(device)
 
-    with torch.no_grad():
-        for i, (images,labels) in enumerate(train_loader):
-            if i == 1: break
-            save_batch_to_text(images,f"batches/layer0_batch")
-            images = images.to(device)
-            output = model(images)
     
+    image , label = next(iter(train_loader))
+    image_detach = image.detach().numpy()
+    save_batch_to_text(image_detach,f"batches/layer0_batch")
+
+    output = model(image)
+
     layers = [f'layer{x}' for x in range(1,14)]
 
-    #for layer in layers:
-    #    save_batch_to_text(model.output[layer],f"batches/{layer}_batch")
+    for layer in layers:
+        save_batch_to_text(model.output[layer],f"batches/{layer}_batch")
 
 
     #weights = model.get_weights()
@@ -148,8 +149,5 @@ if __name__ == "__main__":
     #print(output.shape)
     #save_batch_to_text(output,f"output/layer2_output")
 
-        
-    #save_batch_image_to_text(train_loader,"batches/batch",2)
-    #train_model(train_loader,test_loader,20,100,0.005))
 
 
