@@ -1,12 +1,13 @@
 __pycache__
-data
+.ipynb_checkpoints
+data/
 checkpoint
 batch-job
 env
 .vscode
 .vs
-batches
-biases
-weights
-
+biases/
+weights/
+batches/
+conv
 

@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
+import time
+
 
 from model import VGG16
 
@@ -103,22 +105,22 @@ def save_bias_to_text(array,file_name):
     np.savetxt(f'{file_name}_{output_channel}.txt',array,delimiter=" ")
 
 
-def conv_output(output_channel,input_channel,weight,bias,kernel_size,stride,padding,input):
+def conv_func(input_channel,output_channel,weight,bias,kernel_size,stride,padding,input):
     conv = nn.Conv2d(input_channel,output_channel,kernel_size = kernel_size,stride = stride,padding = padding)
-    print(bias)
     with torch.no_grad():
         conv.weight = nn.Parameter(torch.from_numpy(weight).float(),requires_grad=False)
         conv.bias = nn.Parameter(torch.from_numpy(bias).float(),requires_grad=False)
         input_tensor = torch.from_numpy(input)
+
+        start_time = time.time()
         output = conv(input_tensor)
+        end_time = time.time()
+        print(end_time-start_time)
     
-    return output.detach().numpy()
+    return end_time-start_time
 
 if __name__ == "__main__":
 
-    #train_loader, test_loader = data_loader(data_dir="./data",batch_size=64,shuffle=True)
-
-    #train_model(train_loader,test_loader,20,100,0.005)
 
     train_loader, test_loader = data_loader(data_dir="./data",batch_size=32,shuffle=True)
 
@@ -127,27 +129,34 @@ if __name__ == "__main__":
     
     image , label = next(iter(train_loader))
     image_detach = image.detach().numpy()
-    save_batch_to_text(image_detach,f"batches/layer0_batch")
 
     output = model(image)
 
-    layers = [f'layer{x}' for x in range(1,14)]
-
-    for layer in layers:
-        save_batch_to_text(model.output[layer],f"batches/{layer}_batch")
-
-
-    #weights = model.get_weights()
-    #biases = model.get_biases()
-
-    #for layer in layers:
-    #    save_weight_to_text(weights[layer],f"weights/{layer}")
-    #    save_bias_to_text(biases[layer],f"biases/{layer}")
     
+    weights = model.get_weights()
+    biases = model.get_biases()
 
-    #output = conv_output(64,64,weights['layer2'],biases['layer2'],3,1,1,model.output['layer1'])
-    #print(output.shape)
-    #save_batch_to_text(output,f"output/layer2_output")
+    layers = [f'layer{x}' for x in range(1,14)]
+    input_channels_list = [3,64,64,128,128,256,256,256,512,512,512,512,512]
+    output_channels_list = [64,64,128,128,256,256,256,512,512,512,512,512,512]
+    kernel_size = 3
+    stride = 1
+    padding = 1
+
+    inf_time = []
+    for i,layer in enumerate(layers):
+        print(layer)
+        if i == 0:
+            input = image_detach
+        else:
+            input = model.output[layers[i-1]]
+        
+        t = conv_func(input_channels_list[i],output_channels_list[i],weights[layer],biases[layer],kernel_size,stride,padding,input)
+        inf_time.append(t)
+    
+    arr = np.array(inf_time)
+    np.savetxt('torch_inference_time.txt',arr,delimiter = " ")
+
 
 
 

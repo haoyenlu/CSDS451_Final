@@ -210,13 +210,15 @@ vector<float> ConvNet::direct(vector<float> &input, int input_height,int input_w
 
     int output_chn_block_size = 1;
     int input_chn_block_size = 16;
-    int output_width_block_size = 16;
+    int output_width_block_size = 1;
 
     int output_chn_block_cnt = static_cast<int>(output_channels / output_chn_block_size );
     int input_chn_block_cnt = static_cast<int>(input_channels / input_chn_block_size);
     int output_width_block_cnt = static_cast<int>(output_width / output_width_block_size);
 
     cout << output_chn_block_cnt << "," << input_chn_block_cnt << "," << output_width_block_cnt << endl;
+
+    sycl::range<2> parl_range(output_chn_block_cnt,output_width_block_cnt);
 
     dpc_common::TimeInterval time; // Timing the Convolution Algorithm
 
@@ -225,10 +227,12 @@ vector<float> ConvNet::direct(vector<float> &input, int input_height,int input_w
         auto input_share = input_buf.get_access<sycl::access::mode::read_write>(h);
 
 
-        h.parallel_for(output_chn_block_cnt,[=](sycl::id<1> j){
-            for (int i=0;i< input_chn_block_cnt;i++){
+        h.parallel_for(parl_range,[=](sycl::id<2> index){
+            int j = index[0];
+            int k = index[1];
+            for (int i=0;i<input_chn_block_cnt;i++){
                 for (int l=0;l<output_height;l++){
-                    for (int k=0;k<output_width_block_cnt;k++){
+                    //for (int k=0;k<output_width_block_cnt;k++){
                         for (int n=0;n<kernel;n++){
                             int block_input_height = l * stride + n;
                             if (block_input_height >= input_height) break;
@@ -255,7 +259,7 @@ vector<float> ConvNet::direct(vector<float> &input, int input_height,int input_w
                                 }
                             }
                         }
-                    }
+                    //}
                 }
             }
         });
@@ -267,11 +271,12 @@ vector<float> ConvNet::direct(vector<float> &input, int input_height,int input_w
 
     this->direct_time.push_back(time_elapsed);
 
+    /*
     sycl::host_accessor<float,1> output_host(output_buf);
     for (int i=0;i<this->output_channels * output_height * output_width;i++){
         output[i] = output_host[i];
     }
-
+    */
 
     return output;
 }
@@ -401,16 +406,16 @@ int main(){
 
     // layer 2 convolution
     int batch_size = 32;
-    int input_channels = 128;
-    int output_channels = 128;
-    int input_height = 64;
-    int input_width = 64;
+    int input_channels = 512;
+    int output_channels = 512;
+    int input_height = 16;
+    int input_width = 16;
     int kernel_size = 3;
     int stride = 1;
     int padding = 1;
 
-    string input_layer = "layer3";
-    string output_layer = "layer4";
+    string input_layer = "layer9";
+    string output_layer = "layer10";
 
     //batch 
     const string batch_filepath = "batches/" + input_layer + "_batch_" + to_string(batch_size) + 'x' + to_string(input_channels) + 'x' + to_string(input_height) + 'x' + to_string(input_width) + ".txt";
@@ -441,7 +446,7 @@ int main(){
     for (int i=0 ;i<10;i++) cout << output[0][i] << " ";
     cout << endl;
 
-    string output_filename = "csv/" + output_layer + "_" + to_string(input_channels) + 'x' + to_string(output_channels) + ".csv";
+    string output_filename = "csv_new/" + output_layer + "_" + to_string(input_channels) + 'x' + to_string(output_channels) + ".csv";
     write_performance_time_to_csv(model.naive_time,model.reorder_time,model.direct_time,output_filename);
 
 
