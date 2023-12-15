@@ -2,8 +2,12 @@
 #include <iostream>
 #include <string>
 #include <sycl/sycl.hpp>
-
+#include <fstream>
 #include "dpc_common.hpp"
+
+#define COMP(a,b) (abs(a-b) < 0.005)
+
+    using namespace std;
 
 #define COMP(a,b) (abs(a-b) < 0.005)
 
@@ -28,7 +32,9 @@ class ConvNet{
         vector<double> naive_time;
         vector<double> reorder_time;
         vector<double> direct_time;
-        
+    public:
+        vector<vector<double>> layer_times;  // add to save the layer time
+
     public:
         ConvNet(){};
         ~ConvNet();
@@ -403,52 +409,56 @@ void write_performance_time_to_csv(vector<double> naive_time,vector<double> reor
 
 
 int main(){
-
+    sycl::queue q(sycl::gpu_selector_v);
+    std::cout << "Running on " << q.get_device().get_info<sycl::info::device::name>() << std::endl;
+    
+    try {
     // layer 2 convolution
-    int batch_size = 32;
-    int input_channels = 512;
-    int output_channels = 512;
-    int input_height = 16;
-    int input_width = 16;
-    int kernel_size = 3;
-    int stride = 1;
-    int padding = 1;
+        int batch_size = 32;
+        int input_channels = 512;
+        int output_channels = 512;
+        int input_height = 2;
+        int input_width = 2;
+        int kernel_size = 3;
+        int stride = 1;
+        int padding = 1;
 
-    string input_layer = "layer9";
-    string output_layer = "layer10";
+        string input_layer = "layer12";
+        string output_layer = "layer13";
 
     //batch 
-    const string batch_filepath = "batches/" + input_layer + "_batch_" + to_string(batch_size) + 'x' + to_string(input_channels) + 'x' + to_string(input_height) + 'x' + to_string(input_width) + ".txt";
+        const string batch_filepath = "batches/" + input_layer + "_batch_" + to_string(batch_size) + 'x' + to_string(input_channels) + 'x' + to_string(input_height) + 'x' + to_string(input_width) + ".txt";
     // weight
-    const string weight_filepath = "weights/" + output_layer + "_" + to_string(output_channels) + 'x' + to_string(input_channels) + 'x' + to_string(kernel_size) + 'x' + to_string(kernel_size) + ".txt";
+        const string weight_filepath = "weights/" + output_layer + "_" + to_string(output_channels) + 'x' + to_string(input_channels) + 'x' + to_string(kernel_size) + 'x' + to_string(kernel_size) + ".txt";
     // bias
-    const string bias_filepath = "biases/" + output_layer + "_" + to_string(output_channels) + ".txt";
+        const string bias_filepath = "biases/" + output_layer + "_" + to_string(output_channels) + ".txt";
 
 
-    vector<vector<float>> input = numpy_text_to_batch(batch_size,input_channels,input_height,input_width,batch_filepath);
-    vector<float> weights = numpy_text_to_weight(output_channels,input_channels,kernel_size,weight_filepath);
-    vector<float> biases = numpy_text_to_bias(output_channels,bias_filepath);
+        vector<vector<float>> input = numpy_text_to_batch(batch_size,input_channels,input_height,input_width,batch_filepath);
+        vector<float> weights = numpy_text_to_weight(output_channels,input_channels,kernel_size,weight_filepath);
+        vector<float> biases = numpy_text_to_bias(output_channels,bias_filepath);
 
 
+        ConvNet model(input_channels,output_channels,kernel_size,padding,stride);
 
-    ConvNet model(input_channels,output_channels,kernel_size,padding,stride);
-
-    model.set_weights(weights);
-    model.set_biases(biases);
-
-
-    sycl::queue q(sycl::gpu_selector_v);
-    model.device(q);
-
-    vector<vector<float>> output = model.forward(input,batch_size,input_height,input_width);
+        model.set_weights(weights);
+        model.set_biases(biases);
+        model.device(q);
+        vector<vector<float>> output = model.forward(input,batch_size,input_height,input_width);
+    
+    
 
     
-    for (int i=0 ;i<10;i++) cout << output[0][i] << " ";
-    cout << endl;
+        for (int i=0 ;i<10;i++) cout << output[0][i] << " ";
+            cout << endl;
 
-    string output_filename = "csv_new/" + output_layer + "_" + to_string(input_channels) + 'x' + to_string(output_channels) + ".csv";
-    write_performance_time_to_csv(model.naive_time,model.reorder_time,model.direct_time,output_filename);
+        string output_filename = "csv_new/" + output_layer + "_" + to_string(input_channels) + 'x' + to_string(output_channels) + ".csv";
+        write_performance_time_to_csv(model.naive_time,model.reorder_time,model.direct_time,output_filename);
 
+    } catch (const sycl::exception& e) {
+        std::cerr << "SYCL exception caught: " << e.what() << std::endl;
+    }
+    
 
     /* (Compare result with the output from the pytorch Conv2d)
 
