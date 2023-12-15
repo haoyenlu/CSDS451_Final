@@ -130,6 +130,7 @@ if __name__ == "__main__":
     image , label = next(iter(train_loader))
     image_detach = image.detach().numpy()
 
+    image = image.to(device)
     output = model(image)
 
     
@@ -148,8 +149,10 @@ if __name__ == "__main__":
         print(layer)
         if i == 0:
             input = image_detach
+            save_batch_to_text(input,"batches/layer0")
         else:
             input = model.output[layers[i-1]]
+            save_batch_to_text(input,f"batches/{layers[i-1]}")
         
         t = conv_func(input_channels_list[i],output_channels_list[i],weights[layer],biases[layer],kernel_size,stride,padding,input)
         inf_time.append(t)

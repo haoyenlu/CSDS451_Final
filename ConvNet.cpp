@@ -1,5 +1,6 @@
 #include <vector>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <sycl/sycl.hpp>
 
@@ -16,6 +17,10 @@ class ConvNet{
         unsigned stride;
         unsigned kernel;
         unsigned padding;
+
+        int output_chn_block_size;
+        int input_chn_block_size;
+        int output_width_block_size;
 
         sycl::queue Q;
 
@@ -37,6 +42,7 @@ class ConvNet{
 
         void set_weights(vector<float> weights);
         void set_biases(vector<float> biases);
+        void set_block_size(int output_chn_block_size,int input_chn_block_size, int output_width_block_size);
 
         vector<float> add_padding(vector<float> &input,int input_height,int input_width);
 
@@ -80,8 +86,13 @@ void ConvNet::set_biases(vector<float> biases){
     }
 }
 
+void ConvNet::set_block_size(int output_chn_block_size,int input_chn_block_size, int output_width_block_size){
+    this->output_chn_block_size = output_chn_block_size;
+    this->input_chn_block_size = input_chn_block_size;
+    this->output_width_block_size = output_width_block_size;
+}
+
 vector<float> ConvNet::add_padding(vector<float> &input,int input_height,int input_width){
-    cout << "Add padding\n";
     int input_height_with_padding = input_height + this->padding * 2;
     int input_width_with_padding = input_width + this->padding * 2;
 
@@ -109,7 +120,7 @@ vector<vector<float>> ConvNet::forward(vector<vector<float>> &input, int batch_s
     int input_width_with_padding = input_width + 2 * this->padding;
 
     for (int index = 0; index < batch_size; index ++){
-
+        cout << "----------------(Iteration:" << index << ")----------------\n";
         // add padding 
         vector<float> image_with_padding = this->add_padding(input[index],input_height,input_width);
         // run algorithm
@@ -208,17 +219,18 @@ vector<float> ConvNet::direct(vector<float> &input, int input_height,int input_w
     float *weights_share = this->weights_usm;
     float *biases_share = this->biases_usm;
 
-    int output_chn_block_size = 1;
-    int input_chn_block_size = 16;
-    int output_width_block_size = 1;
+    int output_chn_block_size = this->output_chn_block_size;
+    int input_chn_block_size = this->input_chn_block_size;
+    int output_width_block_size = this->output_width_block_size;
 
     int output_chn_block_cnt = static_cast<int>(output_channels / output_chn_block_size );
     int input_chn_block_cnt = static_cast<int>(input_channels / input_chn_block_size);
     int output_width_block_cnt = static_cast<int>(output_width / output_width_block_size);
 
-    cout << output_chn_block_cnt << "," << input_chn_block_cnt << "," << output_width_block_cnt << endl;
+    //cout << output_chn_block_cnt << "," << input_chn_block_cnt << "," << output_width_block_cnt << endl;
 
-    sycl::range<2> parl_range(output_chn_block_cnt,output_width_block_cnt);
+    sycl::range<2> two_layer_paral_range(output_chn_block_cnt,output_width_block_cnt); // parallel output channel and output width
+    sycl::range<1> one_layer_paral_range(output_chn_block_cnt); // parallel output channel only
 
     dpc_common::TimeInterval time; // Timing the Convolution Algorithm
 
@@ -227,7 +239,7 @@ vector<float> ConvNet::direct(vector<float> &input, int input_height,int input_w
         auto input_share = input_buf.get_access<sycl::access::mode::read_write>(h);
 
 
-        h.parallel_for(parl_range,[=](sycl::id<2> index){
+        h.parallel_for(two_layer_paral_range,[=](sycl::id<2> index){
             int j = index[0];
             int k = index[1];
             for (int i=0;i<input_chn_block_cnt;i++){
@@ -391,6 +403,7 @@ vector<float> numpy_text_to_bias(int output_channels,string filepath){
 }
 
 void write_performance_time_to_csv(vector<double> naive_time,vector<double> reorder_time, vector<double> direct_time, string output_filename){
+    cout << "Write performance to " << output_filename << endl; 
     ofstream file;
     file.open(output_filename);
     file << "naive,reorder,direct\n"; // first row in the csv
@@ -404,63 +417,55 @@ void write_performance_time_to_csv(vector<double> naive_time,vector<double> reor
 
 int main(){
 
-    // layer 2 convolution
+    string layers[14] = {"layer0","layer1","layer2","layer3","layer4","layer5","layer6","layer7","layer8","layer9","layer10","layer11","layer12","layer13"};
+
+    int input_channels[13] = {3,64,64,128,128,256,256,256,512,512,512,512,512};
+    int output_channels[13] = {64,64,128,128,256,256,256,512,512,512,512,512,512};
+    int input_heights[13] = {128,128,64,64,32,32,32,16,16,16,8,8,8};
+    int input_widths[13] = {128,128,64,64,32,32,32,16,16,16,8,8,8};
+
+    int output_chn_block_size = 1;
+    int input_chn_block_size[13] = {1,16,16,32,32,32,32,32,32,32,32,32,32};
+    int output_width_block_size[13] = {32,32,16,16,8,8,8,8,8,8,4,4,4};
+
     int batch_size = 32;
-    int input_channels = 512;
-    int output_channels = 512;
-    int input_height = 16;
-    int input_width = 16;
     int kernel_size = 3;
     int stride = 1;
     int padding = 1;
 
-    string input_layer = "layer9";
-    string output_layer = "layer10";
+    sycl::queue q(sycl::default_selector_v);
 
-    //batch 
-    const string batch_filepath = "batches/" + input_layer + "_batch_" + to_string(batch_size) + 'x' + to_string(input_channels) + 'x' + to_string(input_height) + 'x' + to_string(input_width) + ".txt";
-    // weight
-    const string weight_filepath = "weights/" + output_layer + "_" + to_string(output_channels) + 'x' + to_string(input_channels) + 'x' + to_string(kernel_size) + 'x' + to_string(kernel_size) + ".txt";
-    // bias
-    const string bias_filepath = "biases/" + output_layer + "_" + to_string(output_channels) + ".txt";
-
-
-    vector<vector<float>> input = numpy_text_to_batch(batch_size,input_channels,input_height,input_width,batch_filepath);
-    vector<float> weights = numpy_text_to_weight(output_channels,input_channels,kernel_size,weight_filepath);
-    vector<float> biases = numpy_text_to_bias(output_channels,bias_filepath);
+    for (int i=0;i<13;i++){
+        cout << "---------------------" << "Running " << layers[i+1] << "---------------------" << endl;
+        //batch 
+        const string batch_filepath = "batches/" +  layers[i] + "_" + to_string(batch_size) + 'x' + to_string(input_channels[i]) + 'x' + to_string(input_heights[i]) + 'x' + to_string(input_widths[i]) + ".txt";
+        // weight
+        const string weight_filepath = "weights/" + layers[i+1]+ "_" + to_string(output_channels[i]) + 'x' + to_string(input_channels[i]) + 'x' + to_string(kernel_size) + 'x' + to_string(kernel_size) + ".txt";
+        // bias
+        const string bias_filepath = "biases/" + layers[i+1] + "_" + to_string(output_channels[i]) + ".txt";
 
 
-
-    ConvNet model(input_channels,output_channels,kernel_size,padding,stride);
-
-    model.set_weights(weights);
-    model.set_biases(biases);
+        vector<vector<float>> input = numpy_text_to_batch(batch_size,input_channels[i],input_heights[i],input_widths[i],batch_filepath);
+        vector<float> weights = numpy_text_to_weight(output_channels[i],input_channels[i],kernel_size,weight_filepath);
+        vector<float> biases = numpy_text_to_bias(output_channels[i],bias_filepath);
 
 
-    sycl::queue q(sycl::gpu_selector_v);
-    model.device(q);
 
-    vector<vector<float>> output = model.forward(input,batch_size,input_height,input_width);
+        ConvNet model(input_channels[i],output_channels[i],kernel_size,padding,stride);
+        model.set_weights(weights);
+        model.set_biases(biases);
+        model.set_block_size(output_chn_block_size,input_chn_block_size[i],output_width_block_size[i]);
 
-    
-    for (int i=0 ;i<10;i++) cout << output[0][i] << " ";
-    cout << endl;
+        model.device(q);
+        vector<vector<float>> output = model.forward(input,batch_size,input_heights[i],input_widths[i]);
+            
+        for (int i=0 ;i<10;i++) cout << output[0][i] << " ";
+        cout << endl;
 
-    string output_filename = "csv_new/" + output_layer + "_" + to_string(input_channels) + 'x' + to_string(output_channels) + ".csv";
-    write_performance_time_to_csv(model.naive_time,model.reorder_time,model.direct_time,output_filename);
-
-
-    /* (Compare result with the output from the pytorch Conv2d)
-
-    string output_filepath = "output/layer2_output_32x64x32x32.txt"; // output
-
-    vector<vector<vector<vector<float>>>> output_pytorch = numpy_text_to_batch(batch_size,output_channels,input_height,input_width,output_filepath);
-
-    for (int batch=0;batch < batch_size;batch++){
-        model.cmp_mat(output_pytorch[batch],output[batch]);
+        string output_filename = "csv_new3/" + layers[i+1]+ "_" + to_string(input_channels[i]) + 'x' + to_string(output_channels[i]) + ".csv";
+        write_performance_time_to_csv(model.naive_time,model.reorder_time,model.direct_time,output_filename);
     }
 
-    */
  
     return 0;
 }
