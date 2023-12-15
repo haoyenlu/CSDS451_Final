@@ -1,11 +1,15 @@
 # Final Project for CSDS 451 
+#### Run main.py to get batches (install pytorch first)
+```
+python main.py
+```
 
-### Run makefile to compile c++ script
+#### Run makefile to compile c++ script
 ```
 make
 ```
 
-### Use make run to run the code
+#### Use make run to run the code
 ```
 make run
 ```
