@@ -1,4 +1,7 @@
 # Final Project for CSDS 451 
+### Description
+Implementation of direct convolution for VGG16 model for performance boost.
+
 #### Run main.py to get batches (install pytorch first)
 ```
 python main.py
